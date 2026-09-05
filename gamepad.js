@@ -30,14 +30,56 @@ const STORAGE_KEY = "nightdrive-bindings"
 const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v5"
 
 /** Ideal stick targets for each H-gate (Y-up is negative on XInput). */
+export const GATE_X = 0.85
+export const GATE_Y = 0.85
+/** How far into a vertical rail before a gear engages (else Neutral on the crossbar). */
+const GATE_THROW = 0.52
+
 export const GATE_TARGETS = {
   N: { x: 0, y: 0 },
-  1: { x: -0.85, y: -0.85 },
-  2: { x: -0.85, y: 0.85 },
-  3: { x: 0, y: -0.85 },
-  4: { x: 0, y: 0.85 },
-  5: { x: 0.85, y: -0.85 },
-  6: { x: 0.85, y: 0.85 },
+  1: { x: -GATE_X, y: -GATE_Y },
+  2: { x: -GATE_X, y: GATE_Y },
+  3: { x: 0, y: -GATE_Y },
+  4: { x: 0, y: GATE_Y },
+  5: { x: GATE_X, y: -GATE_Y },
+  6: { x: GATE_X, y: GATE_Y },
+}
+
+/** H-pattern rails: one horizontal crossbar + three vertical gates. */
+const H_SEGMENTS = [
+  { x1: -GATE_X, y1: 0, x2: GATE_X, y2: 0 },
+  { x1: -GATE_X, y1: -GATE_Y, x2: -GATE_X, y2: GATE_Y },
+  { x1: 0, y1: -GATE_Y, x2: 0, y2: GATE_Y },
+  { x1: GATE_X, y1: -GATE_Y, x2: GATE_X, y2: GATE_Y },
+]
+
+const projectPointOnSegment = (px, py, seg) => {
+  const dx = seg.x2 - seg.x1
+  const dy = seg.y2 - seg.y1
+  const len2 = dx * dx + dy * dy || 1
+  let t = ((px - seg.x1) * dx + (py - seg.y1) * dy) / len2
+  t = Math.max(0, Math.min(1, t))
+  return {
+    x: seg.x1 + t * dx,
+    y: seg.y1 + t * dy,
+  }
+}
+
+/**
+ * Snap stick position onto the H-gate lines so the knob only travels the rails.
+ */
+export const projectOntoHPattern = (x, y) => {
+  let best = { x: 0, y: 0 }
+  let bestDist = Infinity
+  for (const seg of H_SEGMENTS) {
+    const point = projectPointOnSegment(x, y, seg)
+    const dist = Math.hypot(x - point.x, y - point.y)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = point
+    }
+  }
+  return best
 }
 
 export const DEFAULT_BINDINGS = {
@@ -345,27 +387,44 @@ export const getHardwareDebugSnapshot = () => {
 }
 
 /**
- * Nearest-gate H-pattern: stick near center = Neutral;
- * otherwise pick the closest gear gate so partial throws still select.
+ * Gear from H-rail position: Neutral on the crossbar / center;
+ * 1–6 only when deep enough into a vertical gate.
  */
 export const resolveHGate = (x, y, neutralRadius = NEUTRAL_RADIUS) => {
-  const mag = Math.hypot(x, y)
-  if (mag < neutralRadius) {
+  const p = projectOntoHPattern(x, y)
+  if (Math.hypot(p.x, p.y) < neutralRadius) {
     return "N"
   }
 
-  let best = "N"
-  let bestDist = Infinity
-  const gears = ["1", "2", "3", "4", "5", "6"]
-  for (const gear of gears) {
-    const target = GATE_TARGETS[gear]
-    const dist = Math.hypot(x - target.x, y - target.y)
-    if (dist < bestDist) {
-      bestDist = dist
-      best = gear
-    }
+  // Still on the horizontal crossbar — not far enough into a gate.
+  if (Math.abs(p.y) < GATE_THROW) {
+    return "N"
   }
-  return best
+
+  let col = "mid"
+  if (p.x <= -GATE_X * 0.5) {
+    col = "left"
+  } else if (p.x >= GATE_X * 0.5) {
+    col = "right"
+  }
+
+  if (p.y < 0) {
+    if (col === "left") {
+      return "1"
+    }
+    if (col === "right") {
+      return "5"
+    }
+    return "3"
+  }
+
+  if (col === "left") {
+    return "2"
+  }
+  if (col === "right") {
+    return "6"
+  }
+  return "4"
 }
 
 const readPad = () => {
@@ -566,15 +625,17 @@ export const pollInput = () => {
     y = target.y
   }
 
-  const gearIntent = resolveHGate(x, y)
+  // Knob + gear intent only travel the H rails (never free 2D diagonals).
+  const onRail = projectOntoHPattern(x, y)
+  const gearIntent = resolveHGate(onRail.x, onRail.y)
   const aEdge = aPressed && !previousA
   previousA = aPressed
 
   return {
     clutch,
     throttle,
-    x,
-    y,
+    x: onRail.x,
+    y: onRail.y,
     gearIntent,
     aPressed,
     aEdge,
@@ -584,7 +645,11 @@ export const pollInput = () => {
 
 export const startGamepadLoop = (onFrame) => {
   const loop = (timestamp) => {
-    onFrame(pollInput(), timestamp)
+    try {
+      onFrame(pollInput(), timestamp)
+    } catch (error) {
+      console.error("[stick-shift] frame error", error)
+    }
     window.requestAnimationFrame(loop)
   }
   window.requestAnimationFrame(loop)

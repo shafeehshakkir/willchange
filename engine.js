@@ -1,6 +1,9 @@
 /**
  * Central drivetrain: gamepad gates + clutch/throttle physics
  * become Web Audio playback, stalls, grinds, and redline abuse.
+ *
+ * Physics model follows transmission_logic.md — virtual RPM + virtualSpeed
+ * (playbackRate), gear ratios, clutch disconnect/lock, stall & grind.
  */
 
 import * as audio from "./audio.js"
@@ -20,30 +23,46 @@ import {
   stopListening,
 } from "./gamepad.js"
 
-const GEAR_MAX_SPEED = {
+/** Gear ratios — lower gears multiply RPM harder vs speed. */
+const GEAR_RATIO = {
   N: 0,
-  1: 0.18,
-  2: 0.34,
-  3: 0.5,
-  4: 0.66,
-  5: 0.82,
-  6: 1,
+  1: 3.5,
+  2: 2.0,
+  3: 1.4,
+  4: 1.0,
+  5: 0.8,
+  6: 0.6,
 }
 
+const IDLE_RPM = 800
+const MAX_RPM = 7000
+const STALL_RPM = 400
+/** Tach face still reads to 8k so redline sits near the painted mark. */
+const TACH_MAX_RPM = 8000
+/**
+ * At virtualSpeed 1.0 in 4th (ratio 1.0) → ~3000 RPM.
+ * Target RPM = virtualSpeed * BASE_RPM_PER_SPEED * gearRatio
+ */
+const BASE_RPM_PER_SPEED = 3000
+/** Throttle acceleration scale (× gear ratio) while clutch is locked. */
+const ACCEL_FACTOR = 0.24
+const COAST_FRICTION = 0.28
+const ENGINE_BRAKE = 0.45
+const REV_MATCH_JERK = 0.28
+const PLAY_SPEED_MIN = 0.1
+/** Below this speed, clutch slip still carries the engine (launch). */
+const LAUNCH_SPEED = 0.42
+
 const CLUTCH_SHIFT = 0.85
-const CLUTCH_HIGH = 0.8
-const CLUTCH_DUMP = 0.2
-const STALL_WINDOW_MS = 1000
-const THROTTLE_STALL_MIN = 0.35
+const CLUTCH_OPEN = 0.8
+const CLUTCH_LOCK = 0.2
 const CRANK_NEED = 5
 const CRANK_WINDOW_MS = 2000
-const REDLINE_HOLD_MS = 3000
 const GRIND_COOLDOWN_MS = 350
-const IDLE_RPM = 800
-const REDLINE_RPM = 7000
-const MAX_RPM = 8000
-const RPM_RISE = 0.009
-const RPM_FALL = 0.0065
+const RPM_RISE_OPEN = 0.011
+const RPM_FALL_OPEN = 0.018
+const RPM_LOCK = 0.035
+const RPM_SLIP = 0.02
 
 const STATE = {
   OFF: "OFF",
@@ -61,15 +80,17 @@ const car = {
   lastGate: "N",
   rpm: 0,
   targetRpm: 0,
+  virtualSpeed: 0,
   redlineMs: 0,
   inRedline: false,
-  clutchWasHighAt: 0,
   lastClutch: 0,
   grindAt: 0,
   crankPresses: [],
   stalling: false,
   catching: false,
   lastFrame: 0,
+  wasLocked: false,
+  audioPlayPending: false,
 }
 
 const qs = (id) => document.getElementById(id)
@@ -132,8 +153,6 @@ const bindUi = () => {
   ui.debugThrottleApply = qs("debug-throttle-apply")
 }
 
-let lastDebugLogAt = 0
-
 const fmt3 = (value) => Number(value || 0).toFixed(3)
 
 const syncDebugFormFromHardware = () => {
@@ -176,19 +195,6 @@ const updateGamepadDebugger = () => {
     .join("\n")
   ui.debugClutch.textContent = fmt3(snap.clutchValue)
   ui.debugThrottle.textContent = fmt3(snap.throttleValue)
-
-  const now = performance.now()
-  if (now - lastDebugLogAt > 500) {
-    lastDebugLogAt = now
-    console.log("[pad-debug]", {
-      b6: snap.button6Value,
-      b7: snap.button7Value,
-      axes: snap.axes.map((v) => Number(v.toFixed(3))),
-      clutchValue: Number(snap.clutchValue.toFixed(3)),
-      throttleValue: Number(snap.throttleValue.toFixed(3)),
-      map: snap.triggerHardware,
-    })
-  }
 }
 
 const applyDebugTrigger = (role) => {
@@ -309,6 +315,10 @@ const registerCrankPress = async () => {
   if (car.crankPresses.length >= CRANK_NEED) {
     car.catching = true
     car.redlineMs = 0
+    car.virtualSpeed = 0
+    car.rpm = IDLE_RPM
+    car.targetRpm = IDLE_RPM
+    car.wasLocked = false
     audio.setPlaybackRate(0.6)
     audio.setMasterGain(1)
     const started = await audio.play()
@@ -348,7 +358,7 @@ const handleShift = (input, now) => {
     return
   }
 
-  // Any new gate while clutch is in: engage. Without clutch: grind.
+  // Grinding: reject gear change while clutch is not fully in.
   if (input.clutch >= CLUTCH_SHIFT) {
     car.gear = gate
   } else if (gate !== car.lastGate) {
@@ -358,24 +368,44 @@ const handleShift = (input, now) => {
   car.lastGate = gate
 }
 
-const detectStall = (input, now) => {
+/** 1 = wheels locked to engine, 0 = fully disconnected. */
+const clutchEngagement = (clutch, gear) => {
+  if (gear === "N") {
+    return 0
+  }
+  if (clutch >= CLUTCH_OPEN) {
+    return 0
+  }
+  if (clutch <= CLUTCH_LOCK) {
+    return 1
+  }
+  return 1 - (clutch - CLUTCH_LOCK) / (CLUTCH_OPEN - CLUTCH_LOCK)
+}
+
+const lockedRpmFromSpeed = (speed, gear) => {
+  const ratio = GEAR_RATIO[gear] ?? 0
+  if (ratio <= 0) {
+    return IDLE_RPM
+  }
+  return speed * BASE_RPM_PER_SPEED * ratio
+}
+
+const detectStall = (clutch) => {
   if (car.state !== STATE.RUNNING || car.gear === "N" || car.stalling) {
     return false
   }
-  if (input.clutch >= CLUTCH_HIGH) {
-    car.clutchWasHighAt = now
-  }
-  const dumped =
-    car.lastClutch > CLUTCH_HIGH &&
-    input.clutch < CLUTCH_DUMP &&
-    now - car.clutchWasHighAt < STALL_WINDOW_MS
-  return dumped && input.throttle < THROTTLE_STALL_MIN
+  const engage = clutchEngagement(clutch, car.gear)
+  // Only stall when the clutch is essentially locked — mid-slip is allowed to lug.
+  return engage > 0.92 && car.rpm < STALL_RPM
 }
 
 const beginStall = async () => {
   car.stalling = true
   car.state = STATE.STALLED
   car.crankPresses = []
+  car.virtualSpeed = 0
+  car.wasLocked = false
+  car.audioPlayPending = false
   audio.playEngineStall()
   await audio.scratchToStop()
   audio.setRedlineDistortion(0)
@@ -388,73 +418,131 @@ const beginStall = async () => {
   setHint("Stalled · mash A to grind the starter again")
 }
 
-const smoothRpm = (dt) => {
+const smoothRpm = (dt, mode) => {
   const delta = car.targetRpm - car.rpm
-  const rate = delta > 0 ? RPM_RISE : RPM_FALL
+  let rate = RPM_RISE_OPEN
+  if (mode === "lock") {
+    rate = RPM_LOCK
+  } else if (mode === "slip") {
+    rate = RPM_SLIP
+  } else if (delta < 0) {
+    rate = RPM_FALL_OPEN
+  }
   const step = 1 - Math.exp(-rate * Math.max(1, dt))
   car.rpm += delta * step
-  if (Math.abs(car.targetRpm - car.rpm) < 4) {
+  if (Math.abs(car.targetRpm - car.rpm) < 6) {
     car.rpm = car.targetRpm
   }
+  car.rpm = Math.max(0, Math.min(MAX_RPM, car.rpm))
 }
 
-const driveAudio = (input, dt) => {
+/**
+ * Manual transmission physics each frame (transmission_logic.md).
+ * virtualSpeed → MP3 playbackRate; RPM from throttle (open) or speed×ratio (locked).
+ */
+const driveDrivetrain = (input, dt) => {
+  const dtSec = Math.max(0.001, Math.min(0.05, dt / 1000))
+
   if (car.state !== STATE.RUNNING) {
     audio.pause()
     audio.setPlaybackRate(1)
     audio.setClutchMuffle(0)
     audio.setRedlineDistortion(0)
+    car.virtualSpeed = 0
     car.targetRpm = car.state === STATE.CRANKING ? 450 : 0
     car.inRedline = false
+    car.wasLocked = false
+    car.audioPlayPending = false
     return
   }
 
-  const clutchIn = input.clutch
-  const engaged = car.gear !== "N" && clutchIn < 0.45
-  const progress = audio.getProgress()
-  const cap = GEAR_MAX_SPEED[car.gear] ?? 1
-  const overCap = car.gear !== "N" && progress > cap
+  const clutch = input.clutch
+  const throttle = input.throttle
+  const gear = car.gear
+  const ratio = GEAR_RATIO[gear] ?? 0
+  const engage = clutchEngagement(clutch, gear)
+  const openRpm = IDLE_RPM + throttle * (MAX_RPM - IDLE_RPM)
+  const launching = gear !== "N" && car.virtualSpeed < LAUNCH_SPEED
 
-  audio.setClutchMuffle(clutchIn)
+  audio.setClutchMuffle(clutch)
 
-  if (!engaged || input.throttle < 0.05) {
-    audio.pause()
-    audio.setPlaybackRate(0.6)
-    car.inRedline = overCap
-    car.redlineMs = overCap ? car.redlineMs + dt : 0
-    const slip = clutchIn * 500
-    const idle = IDLE_RPM + input.throttle * 1100 + (car.gear !== "N" ? slip : 0)
-    car.targetRpm = overCap ? REDLINE_RPM : idle
-    audio.setRedlineDistortion(car.redlineMs > REDLINE_HOLD_MS ? 1 : overCap ? 0.25 : 0)
-    return
-  }
+  // --- Speed ---
+  let speed = car.virtualSpeed
+  const redlining = car.rpm >= MAX_RPM - 20
 
-  let rate = 0.55 + input.throttle * 0.6
-  car.inRedline = overCap
-  if (overCap) {
-    car.redlineMs += dt
-    rate = Math.min(1.22, rate + 0.08)
-    car.targetRpm = REDLINE_RPM + input.throttle * 500
-    audio.setRedlineDistortion(car.redlineMs > REDLINE_HOLD_MS ? 1 : 0.45)
+  if (engage > 0.02 && ratio > 0) {
+    if (throttle > 0.04 && !redlining) {
+      // Slip still transfers torque — needed so launches don't freeze at 0 speed.
+      const slipBoost = launching ? 0.55 + (1 - engage) * 0.35 : 1
+      speed += throttle * ratio * ACCEL_FACTOR * Math.max(engage, launching ? 0.2 : engage) * slipBoost * dtSec
+    } else if (engage > 0.5) {
+      const brake = ENGINE_BRAKE * engage * Math.max(0.15, ratio) * (1 - throttle)
+      speed = Math.max(0, speed - brake * dtSec * Math.max(speed, 0.15))
+    }
+
+    // Rev-match jerk on upshifts while moving — not on a standing launch.
+    const justLocked = engage > 0.85 && !car.wasLocked
+    if (justLocked && speed > 0.12) {
+      const expected = lockedRpmFromSpeed(speed, gear)
+      const mismatch = Math.min(1, Math.abs(car.rpm - expected) / MAX_RPM)
+      if (mismatch > 0.12) {
+        speed *= 1 - mismatch * REV_MATCH_JERK
+        shakeCabin()
+      }
+    }
   } else {
-    car.redlineMs = Math.max(0, car.redlineMs - dt * 1.4)
-    const load = cap > 0 ? progress / cap : 0
-    car.targetRpm = IDLE_RPM + input.throttle * 4800 + load * 1400
-    audio.setRedlineDistortion(Math.min(0.2, car.redlineMs / REDLINE_HOLD_MS))
+    speed = Math.max(0, speed - COAST_FRICTION * dtSec * Math.max(speed, 0.08))
   }
 
-  // Clutch still partly in softens how hard the engine revs.
-  car.targetRpm *= 1 - clutchIn * 0.35
+  car.virtualSpeed = Math.max(0, Math.min(2.2, speed))
+  car.wasLocked = engage > 0.85
 
-  audio.setPlaybackRate(rate)
-  if (!audio.isPlaying()) {
-    audio.play()
+  // --- RPM target ---
+  const wheelRpm = lockedRpmFromSpeed(car.virtualSpeed, gear)
+  if (engage <= 0.001 || gear === "N") {
+    car.targetRpm = openRpm
+  } else if (launching && throttle > 0.12) {
+    // Clutch slip / launch: throttle keeps the engine alive while speed catches up.
+    // Full wheel-lock would yank RPM to ~0 and freeze/stall the takeoff.
+    const load = engage * (0.25 + car.virtualSpeed / LAUNCH_SPEED * 0.55)
+    const floor = IDLE_RPM + throttle * 2200
+    car.targetRpm = openRpm * (1 - load) + Math.max(wheelRpm, floor) * load
+    car.targetRpm = Math.max(floor * 0.85, Math.min(MAX_RPM, car.targetRpm))
+  } else if (engage >= 0.95) {
+    car.targetRpm = Math.max(0, Math.min(MAX_RPM, wheelRpm))
+  } else {
+    car.targetRpm = openRpm * (1 - engage) + wheelRpm * engage
+    car.targetRpm = Math.max(0, Math.min(MAX_RPM, car.targetRpm))
+  }
+
+  car.inRedline = car.rpm >= MAX_RPM - 80
+  if (car.inRedline) {
+    car.redlineMs += dt
+    audio.setRedlineDistortion(Math.min(1, 0.35 + car.redlineMs / 2000))
+  } else {
+    car.redlineMs = Math.max(0, car.redlineMs - dt * 1.5)
+    audio.setRedlineDistortion(Math.min(0.15, car.redlineMs / 2500))
+  }
+
+  // --- Song follows virtualSpeed ---
+  if (car.virtualSpeed > PLAY_SPEED_MIN) {
+    audio.setPlaybackRate(Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed)))
+    if (!audio.isPlaying() && !car.audioPlayPending) {
+      car.audioPlayPending = true
+      audio.play().finally(() => {
+        car.audioPlayPending = false
+      })
+    }
+  } else {
+    audio.pause()
+    audio.setPlaybackRate(1)
+    car.audioPlayPending = false
   }
 }
 
 const updateTach = () => {
-  const rpm = Math.max(0, Math.min(MAX_RPM, car.rpm))
-  const t = rpm / MAX_RPM
+  const rpm = Math.max(0, Math.min(TACH_MAX_RPM, car.rpm))
+  const t = rpm / TACH_MAX_RPM
   const angle = TACH_START + t * 180
   ui.needleArm.setAttribute("transform", `rotate(${angle} ${TACH_CX} ${TACH_CY})`)
   ui.rpmReadout.textContent = String(Math.round(rpm)).padStart(4, "0")
@@ -474,10 +562,11 @@ const updatePedals = (input) => {
 }
 
 const updateKnob = (x, y, gear, intent) => {
-  const nx = Math.max(-1, Math.min(1, x))
-  const ny = Math.max(-1, Math.min(1, y))
-  const left = 50 + nx * 36
-  const top = 50 + ny * 32
+  // Match CSS rail centers: left/mid/right verticals + horizontal crossbar.
+  const railX = 39.5
+  const railY = 38
+  const left = 50 + (Math.max(-1, Math.min(1, x)) / 0.85) * railX
+  const top = 50 + (Math.max(-1, Math.min(1, y)) / 0.85) * railY
   ui.knob.style.left = `${left}%`
   ui.knob.style.top = `${top}%`
   ui.gate.querySelectorAll("[data-gate]").forEach((label) => {
@@ -494,6 +583,21 @@ const updateChrome = (input) => {
   updateTach()
   updatePedals(input)
   updateKnob(input.x, input.y, car.gear, input.gearIntent)
+
+  // Clear the post-start lock so live driving hints can show.
+  if (car.state === STATE.RUNNING && ui.hint?.dataset.locked === "1") {
+    const lockedText = ui.hint.textContent || ""
+    if (lockedText.includes("Engine caught") || car.inRedline) {
+      delete ui.hint.dataset.locked
+    }
+  }
+  if (car.state === STATE.RUNNING && ui.hint && !ui.hint.dataset.locked) {
+    if (car.inRedline || car.rpm > MAX_RPM - 900) {
+      ui.hint.textContent = "Redline · clutch in and shift up"
+    } else if (car.gear !== "N" && car.virtualSpeed > PLAY_SPEED_MIN) {
+      ui.hint.textContent = `Gear ${car.gear} · speed ${car.virtualSpeed.toFixed(2)}×`
+    }
+  }
 }
 
 const syncBindingLabels = () => {
@@ -635,21 +739,29 @@ const tick = (input, timestamp) => {
 
   if (car.stalling) {
     car.targetRpm = 0
-    smoothRpm(dt)
+    smoothRpm(dt, "open")
     car.lastClutch = input.clutch
     updateChrome(input)
     updateGamepadDebugger()
     return
   }
 
-  if (detectStall(input, timestamp)) {
+  driveDrivetrain(input, dt)
+  const engage = clutchEngagement(input.clutch, car.gear)
+  const launching = car.gear !== "N" && car.virtualSpeed < LAUNCH_SPEED
+  let rpmMode = "open"
+  if (engage > 0.95 && !launching) {
+    rpmMode = "lock"
+  } else if (engage > 0.05 && car.gear !== "N") {
+    rpmMode = "slip"
+  }
+  smoothRpm(dt, rpmMode)
+  car.lastClutch = input.clutch
+
+  if (detectStall(input.clutch)) {
     beginStall()
-  } else {
-    driveAudio(input, dt)
   }
 
-  smoothRpm(dt)
-  car.lastClutch = input.clutch
   updateChrome(input)
   updateGamepadDebugger()
 }

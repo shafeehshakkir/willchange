@@ -22,11 +22,15 @@ let masterGain = null
 let sfxGain = null
 let objectUrl = null
 let graphReady = false
+let lastClutchMuffle = -1
+let lastRedlineWet = -1
+let lastPlaybackRate = -1
+const distortionCurveCache = new Map()
 
 const getTrack = () => document.getElementById(TRACK_ID)
 
 const makeDistortionCurve = (amount) => {
-  const samples = 44100
+  const samples = 2048
   const curve = new Float32Array(samples)
   const k = amount * 80
   if (k <= 0) {
@@ -39,6 +43,16 @@ const makeDistortionCurve = (amount) => {
   for (let i = 0; i < samples; i += 1) {
     const x = (i * 2) / samples - 1
     curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x))
+  }
+  return curve
+}
+
+const getDistortionCurve = (amount) => {
+  const key = Math.round(amount * 20) / 20
+  let curve = distortionCurveCache.get(key)
+  if (!curve) {
+    curve = makeDistortionCurve(key)
+    distortionCurveCache.set(key, curve)
   }
   return curve
 }
@@ -123,6 +137,10 @@ export const setClutchMuffle = (amount) => {
     return
   }
   const clamped = Math.min(1, Math.max(0, amount))
+  if (Math.abs(clamped - lastClutchMuffle) < 0.01) {
+    return
+  }
+  lastClutchMuffle = clamped
   const freq = 18000 - clamped * 16500
   lowpass.frequency.setTargetAtTime(freq, audioContext.currentTime, 0.04)
 }
@@ -132,16 +150,41 @@ export const setRedlineDistortion = (amount) => {
     return
   }
   const wet = Math.min(1, Math.max(0, amount))
-  shaper.curve = makeDistortionCurve(wet)
+  if (Math.abs(wet - lastRedlineWet) < 0.03) {
+    return
+  }
+  lastRedlineWet = wet
+  shaper.curve = getDistortionCurve(wet)
   dryGain.gain.setTargetAtTime(1 - wet * 0.85, audioContext.currentTime, 0.05)
   wetGain.gain.setTargetAtTime(wet, audioContext.currentTime, 0.05)
 }
 
+/** Chromium rejects rates below ~0.0625 — keep a safe floor. */
+const MIN_PLAYBACK_RATE = 0.1
+const MAX_PLAYBACK_RATE = 2
+
 export const setPlaybackRate = (rate) => {
   const track = getTrack()
-  const safe = Math.max(0.05, Math.min(2, rate))
-  track.playbackRate = safe
-  track.preservesPitch = false
+  if (!track) {
+    return
+  }
+  const safe = Math.max(MIN_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, Number(rate) || 1))
+  if (Math.abs(safe - lastPlaybackRate) < 0.004) {
+    return
+  }
+  try {
+    track.playbackRate = safe
+    track.preservesPitch = false
+    lastPlaybackRate = safe
+  } catch (error) {
+    // Never let an unsupported rate kill the rAF game loop.
+    try {
+      track.playbackRate = 1
+      lastPlaybackRate = 1
+    } catch (fallbackError) {
+      lastPlaybackRate = -1
+    }
+  }
 }
 
 export const setMasterGain = (gain) => {
@@ -185,6 +228,7 @@ export const stopAndResetPitch = () => {
   const track = getTrack()
   track.pause()
   track.playbackRate = 1
+  lastPlaybackRate = 1
 }
 
 export const getProgress = () => {
@@ -282,16 +326,28 @@ export const scratchToStop = async () => {
   const track = getTrack()
   if (track.paused) {
     track.playbackRate = 1
+    lastPlaybackRate = 1
     return
   }
   const start = track.playbackRate || 1
   const steps = 8
   for (let i = 1; i <= steps; i += 1) {
-    track.playbackRate = Math.max(0.05, start * (1 - i / steps))
+    const next = Math.max(MIN_PLAYBACK_RATE, start * (1 - i / steps))
+    try {
+      track.playbackRate = next
+      lastPlaybackRate = next
+    } catch (error) {
+      break
+    }
     await new Promise((resolve) => {
       window.setTimeout(resolve, 40)
     })
   }
   track.pause()
-  track.playbackRate = 1
+  try {
+    track.playbackRate = 1
+  } catch (error) {
+    /* ignore */
+  }
+  lastPlaybackRate = 1
 }
