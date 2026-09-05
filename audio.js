@@ -337,20 +337,54 @@ export const setPlaybackReverse = (wantReverse) => {
 
 export const isPlaybackReverse = () => reverseMode
 
+const applyPitchPolicy = (track) => {
+  try {
+    track.preservesPitch = false
+  } catch (error) {
+    /* ignore */
+  }
+  try {
+    track.mozPreservesPitch = false
+  } catch (error) {
+    /* ignore */
+  }
+  try {
+    track.webkitPreservesPitch = false
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+/** Actual rate currently driving the song (not the cached intent). */
+export const getPlaybackRate = () => {
+  if (reverseMode && bufferPlaying) {
+    return bufferRate
+  }
+  const track = getTrack()
+  if (!track) {
+    return Math.abs(lastPlaybackRate) || 1
+  }
+  const live = Number(track.playbackRate)
+  if (Number.isFinite(live) && live !== 0) {
+    return Math.abs(live)
+  }
+  return Math.abs(lastPlaybackRate) || 1
+}
+
 export const setPlaybackRate = (rate) => {
   const track = getTrack()
   if (!track) {
     return
   }
   const safe = Math.max(MIN_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, Math.abs(Number(rate) || 1)))
-  if (Math.abs(safe - Math.abs(lastPlaybackRate)) < 0.004 && !(reverseMode && bufferPlaying)) {
-    lastPlaybackRate = safe
-    return
-  }
   lastPlaybackRate = safe
 
   if (reverseMode) {
     if (activeBufferSource && bufferPlaying && audioContext) {
+      const live = Number(activeBufferSource.playbackRate.value)
+      if (Math.abs(safe - live) < 0.004 && Math.abs(safe - bufferRate) < 0.004) {
+        return
+      }
       const pos = getMediaTimelinePos()
       activeBufferSource.playbackRate.value = safe
       bufferAnchorMediaTime = pos
@@ -360,9 +394,15 @@ export const setPlaybackRate = (rate) => {
     return
   }
 
+  // Always re-write if the element drifted (browsers often reset rate on play/seek).
+  const live = Number(track.playbackRate)
+  if (Number.isFinite(live) && Math.abs(safe - Math.abs(live)) < 0.004) {
+    return
+  }
+
   try {
     track.playbackRate = safe
-    track.preservesPitch = false
+    applyPitchPolicy(track)
   } catch (error) {
     try {
       track.playbackRate = 1
@@ -413,6 +453,14 @@ export const play = async () => {
       mediaGate.gain.value = 1
     }
     await track.play()
+    // Chrome/Firefox can reset playbackRate when play() resolves — re-apply.
+    const safe = Math.max(
+      MIN_PLAYBACK_RATE,
+      Math.min(MAX_PLAYBACK_RATE, Math.abs(lastPlaybackRate) || 1),
+    )
+    track.playbackRate = safe
+    applyPitchPolicy(track)
+    lastPlaybackRate = safe
     return true
   } catch (error) {
     return false

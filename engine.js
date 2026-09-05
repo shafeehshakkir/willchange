@@ -23,14 +23,14 @@ import {
   stopListening,
 } from "./gamepad.js"
 
-/** Gear ratios — lower gears multiply RPM harder vs speed. R = reverse. */
+/** Gear ratios — tuned so cruise ≈ 3.5k RPM, ceiling push climbs to redline. R = reverse. */
 const GEAR_RATIO = {
   N: 0,
-  1: 3.5,
+  1: 2.6,
   2: 2.0,
-  3: 1.4,
-  4: 1.0,
-  5: 0.8,
+  3: 1.6,
+  4: 1.33,
+  5: 1.2,
   R: 2.8,
 }
 
@@ -40,31 +40,42 @@ const STALL_RPM = 400
 /** Tach face still reads to 8k so redline sits near the painted mark. */
 const TACH_MAX_RPM = 8000
 /**
- * At virtualSpeed 1.0 in 4th (ratio 1.0) → ~3000 RPM.
- * Target RPM = virtualSpeed * BASE_RPM_PER_SPEED * gearRatio
+ * At virtualSpeed 1.0 in 5th (ratio 1.2) → ~3600 RPM cruise band.
+ * Target RPM = virtualSpeed * BASE_RPM_PER_SPEED * gearRatio (below cruise).
  */
 const BASE_RPM_PER_SPEED = 3000
 /** Throttle acceleration scale (× gear ratio) while clutch is locked. */
-const ACCEL_FACTOR = 0.09
+const ACCEL_FACTOR = 0.1
 const COAST_FRICTION = 0.28
 const ENGINE_BRAKE = 0.45
 const REV_MATCH_JERK = 0.28
 const PLAY_SPEED_MIN = 0.1
 /** Below this speed, clutch slip still carries the engine (launch). */
-const LAUNCH_SPEED = 0.42
+const LAUNCH_SPEED = 0.28
 
 /**
- * Soft virtualSpeed ceilings per gear. Early in the song caps are tighter
- * so low gears redline sooner; later they open toward these bases.
+ * Per-gear song-speed bands (playbackRate).
+ * Cruise = comfortable clean listen; ceiling = hard limit (redline if held).
+ * Every gear plays the song — higher gears unlock faster playback.
  */
-const GEAR_SPEED_CAP = {
+const GEAR_CRUISE = {
   N: 0,
-  1: 0.35,
-  2: 0.5,
-  3: 0.65,
-  4: 0.8,
+  1: 0.45,
+  2: 0.6,
+  3: 0.75,
+  4: 0.9,
   5: 1.0,
   R: 0.4,
+}
+
+const GEAR_CEILING = {
+  N: 0,
+  1: 0.55,
+  2: 0.7,
+  3: 0.85,
+  4: 1.0,
+  5: 1.15,
+  R: 0.5,
 }
 
 const CLUTCH_SHIFT = 0.7
@@ -86,15 +97,8 @@ const freeRevTargetRpm = (throttle) => {
   return IDLE_RPM + eased * (MAX_RPM - IDLE_RPM)
 }
 
-/** Song-progress-aware soft cap for the current gear. */
-const gearSpeedCap = (gear) => {
-  const base = GEAR_SPEED_CAP[gear] ?? 0
-  if (base <= 0) {
-    return 0
-  }
-  const progress = audio.getProgress()
-  return lerp(base * 0.55, base, progress)
-}
+const gearCruise = (gear) => GEAR_CRUISE[gear] ?? 0
+const gearCeiling = (gear) => GEAR_CEILING[gear] ?? 0
 
 const STATE = {
   OFF: "OFF",
@@ -262,13 +266,7 @@ const drawTachTicks = () => {
     const y1 = TACH_CY + sin * inner
     const x2 = TACH_CX + cos * outer
     const y2 = TACH_CY + sin * outer
-    const labelR = 66
-    const lx = TACH_CX + cos * labelR
-    const ly = TACH_CY + sin * labelR
-    const labelClass = mark >= 7 ? "tach-label tach-label-hot" : "tach-label"
-    const tick = `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="currentColor" stroke-width="${mark % 2 === 0 ? 2 : 1.25}" />`
-    const label = `<text class="${labelClass}" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" dominant-baseline="middle">${mark}</text>`
-    return tick + label
+    return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="currentColor" stroke-width="${mark % 2 === 0 ? 2 : 1.25}" />`
   })
   ui.tachTicks.innerHTML = parts.join("")
 }
@@ -504,13 +502,15 @@ const driveDrivetrain = (input, dt) => {
   const engage = clutchEngagement(clutch, gear)
   const openRpm = freeRevTargetRpm(throttle)
   const launching = gear !== "N" && car.virtualSpeed < LAUNCH_SPEED
-  const speedCap = gearSpeedCap(gear)
+  const cruise = gearCruise(gear)
+  const ceiling = gearCeiling(gear)
 
   audio.setClutchMuffle(clutch)
 
   // --- Speed ---
   let speed = car.virtualSpeed
-  const atCap = speedCap > 0 && speed >= speedCap * 0.98
+  const atCap = ceiling > 0 && speed >= ceiling * 0.98
+  const aboveCruise = cruise > 0 && speed > cruise
   const redlining = car.rpm >= MAX_RPM - 20 || (atCap && throttle > 0.05 && engage > 0.3)
 
   if (engage > 0.02 && ratio > 0) {
@@ -537,21 +537,26 @@ const driveDrivetrain = (input, dt) => {
     speed = Math.max(0, speed - COAST_FRICTION * dtSec * Math.max(speed, 0.08))
   }
 
-  if (speedCap > 0) {
-    speed = Math.min(speed, speedCap)
+  if (ceiling > 0) {
+    speed = Math.min(speed, ceiling)
   }
   car.virtualSpeed = Math.max(0, Math.min(2.2, speed))
   car.wasLocked = engage > 0.85
 
   // --- RPM target ---
   const wheelRpm = lockedRpmFromSpeed(car.virtualSpeed, gear)
+  const cruiseRpm = cruise > 0 ? lockedRpmFromSpeed(cruise, gear) : IDLE_RPM
   if (engage <= 0.001 || gear === "N") {
     car.targetRpm = openRpm
   } else if (atCap && throttle > 0.05) {
-    // Held against the song/gear ceiling — climb into redline instead of gaining speed.
-    car.targetRpm = lerp(wheelRpm, MAX_RPM, Math.min(1, 0.35 + throttle * 0.65))
+    // At this gear's song-speed ceiling — redline instead of going faster.
+    car.targetRpm = lerp(Math.max(wheelRpm, cruiseRpm), MAX_RPM, Math.min(1, 0.45 + throttle * 0.55))
+  } else if (aboveCruise && engage > 0.2) {
+    // Between cruise and ceiling: tach climbs hard toward redline.
+    const span = Math.max(0.001, ceiling - cruise)
+    const t = Math.min(1, (car.virtualSpeed - cruise) / span)
+    car.targetRpm = lerp(cruiseRpm, MAX_RPM, t)
   } else if (launching && throttle > 0.12) {
-    // Clutch slip / launch: throttle keeps the engine alive while speed catches up.
     const load = engage * (0.25 + car.virtualSpeed / LAUNCH_SPEED * 0.55)
     const floor = IDLE_RPM + throttle * 1800
     car.targetRpm = openRpm * (1 - load) + Math.max(wheelRpm, floor) * load
@@ -563,7 +568,12 @@ const driveDrivetrain = (input, dt) => {
     car.targetRpm = Math.max(0, Math.min(MAX_RPM, car.targetRpm))
   }
 
-  car.inRedline = car.rpm >= MAX_RPM - 80 || (atCap && car.rpm >= MAX_RPM - 400 && throttle > 0.2)
+  if (!Number.isFinite(car.targetRpm)) {
+    car.targetRpm = IDLE_RPM
+  }
+
+  car.inRedline =
+    car.rpm >= MAX_RPM - 80 || (atCap && throttle > 0.15 && car.rpm >= MAX_RPM - 500)
   if (car.inRedline) {
     car.redlineMs += dt
     audio.setRedlineDistortion(Math.min(1, 0.35 + car.redlineMs / 2000))
@@ -572,19 +582,33 @@ const driveDrivetrain = (input, dt) => {
     audio.setRedlineDistortion(Math.min(0.15, car.redlineMs / 2500))
   }
 
-  // --- Song follows virtualSpeed (reverse gear plays the track backward) ---
-  audio.setPlaybackReverse(gear === "R")
-  if (car.virtualSpeed > PLAY_SPEED_MIN) {
-    audio.setPlaybackRate(Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed)))
-    if (!audio.isPlaying() && !car.audioPlayPending) {
-      car.audioPlayPending = true
-      audio.play().finally(() => {
-        car.audioPlayPending = false
-      })
+  // --- Song follows virtualSpeed 1:1 (R plays backward) ---
+  const songRate = Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed))
+  try {
+    audio.setPlaybackReverse(gear === "R")
+    if (car.virtualSpeed > PLAY_SPEED_MIN) {
+      audio.setPlaybackRate(songRate)
+      if (!audio.isPlaying() && !car.audioPlayPending) {
+        car.audioPlayPending = true
+        Promise.resolve(audio.play())
+          .then((ok) => {
+            if (ok) {
+              // Re-stamp after play() in case the browser cleared the rate.
+              audio.setPlaybackRate(Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed)))
+            }
+          })
+          .catch(() => false)
+          .finally(() => {
+            car.audioPlayPending = false
+          })
+      }
+    } else {
+      audio.pause()
+      audio.setPlaybackRate(1)
+      car.audioPlayPending = false
     }
-  } else {
-    audio.pause()
-    audio.setPlaybackRate(1)
+  } catch (error) {
+    console.error("[stick-shift] audio sync", error)
     car.audioPlayPending = false
   }
 }
@@ -641,10 +665,19 @@ const updateChrome = (input) => {
     }
   }
   if (car.state === STATE.RUNNING && ui.hint && !ui.hint.dataset.locked) {
-    if (car.inRedline || car.rpm > MAX_RPM - 900) {
+    const ceiling = gearCeiling(car.gear)
+    const atSongCap = ceiling > 0 && car.virtualSpeed >= ceiling * 0.95
+    if (atSongCap && input.throttle > 0.15) {
+      ui.hint.textContent =
+        car.gear === "5" || car.gear === "R"
+          ? "Redline · ease off or shift"
+          : "Redline · shift up for more song speed"
+    } else if (car.inRedline || car.rpm > MAX_RPM - 900) {
       ui.hint.textContent = "Redline · clutch in and shift up"
     } else if (car.gear !== "N" && car.virtualSpeed > PLAY_SPEED_MIN) {
-      ui.hint.textContent = `Gear ${car.gear} · speed ${car.virtualSpeed.toFixed(2)}×`
+      // Show the rate actually on the audio element so UI matches what you hear.
+      const heard = audio.getPlaybackRate()
+      ui.hint.textContent = `Gear ${car.gear} · song ${heard.toFixed(2)}×`
     }
   }
 }

@@ -87,17 +87,6 @@
   color: #777;
 }
 
-.tach-label {
-  fill: #8a8a8a;
-  font-size: 11px;
-  font-weight: 600;
-  font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
-}
-
-.tach-label-hot {
-  fill: var(--danger);
-}
-
 #redline-flag {
   display: none;
 }
