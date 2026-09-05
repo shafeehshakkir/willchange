@@ -36,10 +36,15 @@
 }
 
 .radio-bezel,
-.dash-panel,
 .bindings-panel {
   background: var(--panel);
   border: 1px solid var(--line);
+}
+
+.dash-panel {
+  background: rgba(28, 28, 28, 0.82);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(6px);
 }
 
 .led-dot {
