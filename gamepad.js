@@ -24,16 +24,22 @@ export const TRIGGER_HARDWARE = {
   throttle: { source: "axis", index: 5, range: "minus1to1" },
 }
 
-const NEUTRAL_RADIUS = 0.28
+const NEUTRAL_RADIUS = 0.22
 const KEY_RAMP = 0.12
-const STORAGE_KEY = "nightdrive-bindings"
+const STORAGE_KEY = "nightdrive-bindings-v6"
 const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v5"
 
 /** Ideal stick targets for each H-gate (Y-up is negative on XInput). */
 export const GATE_X = 0.85
 export const GATE_Y = 0.85
 /** How far into a vertical rail before a gear engages (else Neutral on the crossbar). */
-const GATE_THROW = 0.52
+const GATE_THROW = 0.3
+const LANE_XS = [-GATE_X, 0, GATE_X]
+const JUNCTION_EPS = 0.07
+const STICK_DEADZONE = 0.22
+/** Knob travel speed along rails at full stick (units / second). */
+const H_MOVE_SPEED = 5.2
+const H_KEY_SPEED = 9
 
 export const GATE_TARGETS = {
   N: { x: 0, y: 0 },
@@ -45,48 +51,131 @@ export const GATE_TARGETS = {
   6: { x: GATE_X, y: GATE_Y },
 }
 
-/** H-pattern rails: one horizontal crossbar + three vertical gates. */
-const H_SEGMENTS = [
-  { x1: -GATE_X, y1: 0, x2: GATE_X, y2: 0 },
-  { x1: -GATE_X, y1: -GATE_Y, x2: -GATE_X, y2: GATE_Y },
-  { x1: 0, y1: -GATE_Y, x2: 0, y2: GATE_Y },
-  { x1: GATE_X, y1: -GATE_Y, x2: GATE_X, y2: GATE_Y },
-]
+/** Live knob position — always on the H pathway (never free 2D). */
+let knobX = 0
+let knobY = 0
+let lastPollAt = 0
 
-const projectPointOnSegment = (px, py, seg) => {
-  const dx = seg.x2 - seg.x1
-  const dy = seg.y2 - seg.y1
-  const len2 = dx * dx + dy * dy || 1
-  let t = ((px - seg.x1) * dx + (py - seg.y1) * dy) / len2
-  t = Math.max(0, Math.min(1, t))
-  return {
-    x: seg.x1 + t * dx,
-    y: seg.y1 + t * dy,
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const moveToward = (value, target, step) => {
+  if (Math.abs(target - value) <= step) {
+    return target
   }
+  return value + Math.sign(target - value) * step
 }
 
-/**
- * Snap stick position onto the H-gate lines so the knob only travels the rails.
- */
-export const projectOntoHPattern = (x, y) => {
-  let best = { x: 0, y: 0 }
+const nearestLaneX = (x) => {
+  let best = 0
   let bestDist = Infinity
-  for (const seg of H_SEGMENTS) {
-    const point = projectPointOnSegment(x, y, seg)
-    const dist = Math.hypot(x - point.x, y - point.y)
+  for (const lane of LANE_XS) {
+    const dist = Math.abs(x - lane)
     if (dist < bestDist) {
       bestDist = dist
-      best = point
+      best = lane
     }
   }
   return best
 }
 
+const applyStickDeadzone = (value) => (Math.abs(value) < STICK_DEADZONE ? 0 : value)
+
+/**
+ * Gated H-pattern: knob only moves along the current rail.
+ * Vertical slots only move vertically; crossbar only horizontally.
+ * Enter/leave a slot only at the junction (y ≈ 0 on a lane).
+ * This prevents jumping 1 → 3 without traveling the pathway.
+ */
+export const advanceHKnobFromStick = (stickX, stickY, dtSec) => {
+  const sx = applyStickDeadzone(stickX)
+  const sy = applyStickDeadzone(stickY)
+  if (sx === 0 && sy === 0) {
+    // Stick centered — latch knob where it is (gamepads spring to center).
+    return { x: knobX, y: knobY }
+  }
+
+  const step = H_MOVE_SPEED * Math.max(0.001, dtSec)
+
+  if (Math.abs(knobY) > JUNCTION_EPS) {
+    // Locked in a vertical gate — only slide along that lane.
+    knobX = nearestLaneX(knobX)
+    const nextY = knobY + sy * step
+    // Crossing the crossbar always stops at Neutral on this lane.
+    if (sy !== 0 && (Math.sign(knobY) !== Math.sign(nextY) || Math.abs(nextY) <= JUNCTION_EPS)) {
+      knobY = 0
+    } else {
+      knobY = clamp(nextY, -GATE_Y, GATE_Y)
+    }
+  } else {
+    // On the horizontal crossbar.
+    knobY = 0
+    // Prefer left/right lane changes when the stick has a horizontal bias,
+    // so you can leave a gate and slide to the next without re-entering.
+    const wantLaneChange = Math.abs(sx) > 0 && Math.abs(sx) >= Math.abs(sy) * 0.75
+    if (wantLaneChange) {
+      knobX = clamp(knobX + sx * step, -GATE_X, GATE_X)
+    } else if (Math.abs(sy) > 0) {
+      const lane = nearestLaneX(knobX)
+      if (Math.abs(knobX - lane) <= JUNCTION_EPS) {
+        knobX = lane
+        knobY = clamp(sy * step, -GATE_Y, GATE_Y)
+      } else {
+        // Drift onto the nearest lane before entering a vertical gate.
+        knobX = moveToward(knobX, lane, step)
+      }
+    }
+  }
+
+  return { x: knobX, y: knobY }
+}
+
+/**
+ * Move knob toward a target along the H pathway only (for keyboard gears).
+ */
+export const advanceHKnobToward = (targetX, targetY, dtSec) => {
+  const step = H_KEY_SPEED * Math.max(0.001, dtSec)
+  const sameLane = Math.abs(knobX - targetX) <= JUNCTION_EPS
+
+  if (Math.abs(knobY) > JUNCTION_EPS) {
+    knobX = nearestLaneX(knobX)
+    if (!sameLane || Math.sign(knobY) !== Math.sign(targetY) && Math.abs(targetY) > JUNCTION_EPS) {
+      // Leave current gate to the crossbar before changing lanes.
+      knobY = moveToward(knobY, 0, step)
+      if (Math.abs(knobY) <= JUNCTION_EPS) {
+        knobY = 0
+      }
+      return { x: knobX, y: knobY }
+    }
+    knobY = moveToward(knobY, targetY, step)
+    return { x: knobX, y: knobY }
+  }
+
+  knobY = 0
+  if (Math.abs(knobX - targetX) > JUNCTION_EPS) {
+    knobX = moveToward(knobX, targetX, step)
+    return { x: knobX, y: knobY }
+  }
+
+  knobX = targetX
+  knobY = moveToward(knobY, targetY, step)
+  return { x: knobX, y: knobY }
+}
+
+/** Snap helper kept for any UI that still wants nearest-rail projection. */
+export const projectOntoHPattern = (x, y) => {
+  // Prefer current pathway rules: if already near a rail, stay gated.
+  if (Math.abs(y) > JUNCTION_EPS) {
+    return { x: nearestLaneX(x), y: clamp(y, -GATE_Y, GATE_Y) }
+  }
+  return { x: clamp(x, -GATE_X, GATE_X), y: 0 }
+}
+
 export const DEFAULT_BINDINGS = {
   clutch: { type: "axis", index: 2 },
   throttle: { type: "axis", index: 5 },
-  shiftX: { type: "axis", index: 3 },
-  shiftY: { type: "axis", index: 4 },
+  // Non-standard Linux pads (mapping: none) usually put right stick on 2/3.
+  shiftX: { type: "axis", index: 2 },
+  shiftY: { type: "axis", index: 3 },
   invertShiftY: false,
   ignition: { type: "button", index: 0 },
   shifterStick: "right",
@@ -217,6 +306,14 @@ export const setTriggerHardware = (role, source, index, range = "minus1to1") => 
   userLockedMapping = true
   syncBindingsFromTriggers()
   persistTriggerHardware()
+  // If the new pedal axis was the shifter, move the stick to a free pair.
+  if (
+    normalizedSource === "axis" &&
+    (Number(index) === bindings.shiftX.index || Number(index) === bindings.shiftY.index)
+  ) {
+    applyShifterAxesForStick(bindings.shifterStick)
+    persistBindings()
+  }
   return getTriggerHardware()
 }
 
@@ -226,18 +323,74 @@ export const resetBindings = () => {
   userLockedMapping = false
   listenBaselineAxes = null
   listenBaselineButtons = null
+  knobX = 0
+  knobY = 0
   persistBindings()
   persistTriggerHardware()
+  applyShifterAxesForStick(bindings.shifterStick)
   return getBindings()
 }
 
-export const setShifterStick = (side) => {
+const triggerAxisIndexes = () => {
+  const used = new Set()
+  ;["clutch", "throttle"].forEach((role) => {
+    const hw = triggerHardware?.[role]
+    if (hw?.source === "axis") {
+      used.add(Number(hw.index))
+    }
+  })
+  return used
+}
+
+/** Pick stick axes that do not collide with mapped clutch/throttle axes. */
+const applyShifterAxesForStick = (side) => {
   bindings.shifterStick = side === "left" ? "left" : "right"
-  // Linux layout: left stick 0/1, right stick 3/4 (2 and 5 are triggers).
-  bindings.shiftX = { type: "axis", index: bindings.shifterStick === "left" ? 0 : 3 }
-  bindings.shiftY = { type: "axis", index: bindings.shifterStick === "left" ? 1 : 4 }
+  if (bindings.shifterStick === "left") {
+    bindings.shiftX = { type: "axis", index: 0 }
+    bindings.shiftY = { type: "axis", index: 1 }
+    return
+  }
+
+  const used = triggerAxisIndexes()
+  const candidates = [
+    [2, 3],
+    [3, 4],
+    [0, 1],
+  ]
+  for (const pair of candidates) {
+    if (!used.has(pair[0]) && !used.has(pair[1])) {
+      bindings.shiftX = { type: "axis", index: pair[0] }
+      bindings.shiftY = { type: "axis", index: pair[1] }
+      return
+    }
+  }
+
+  const free = []
+  for (let i = 0; i < 8; i += 1) {
+    if (!used.has(i)) {
+      free.push(i)
+    }
+    if (free.length === 2) {
+      break
+    }
+  }
+  bindings.shiftX = { type: "axis", index: free[0] ?? 2 }
+  bindings.shiftY = { type: "axis", index: free[1] ?? 3 }
+}
+
+export const setShifterStick = (side) => {
+  applyShifterAxesForStick(side)
   persistBindings()
   return getBindings()
+}
+
+// Avoid pedal/shifter axis collisions from older saved bindings.
+{
+  const used = triggerAxisIndexes()
+  if (used.has(bindings.shiftX.index) || used.has(bindings.shiftY.index)) {
+    applyShifterAxesForStick(bindings.shifterStick)
+    persistBindings()
+  }
 }
 
 export const setInvertShiftY = (invert) => {
@@ -387,41 +540,33 @@ export const getHardwareDebugSnapshot = () => {
 }
 
 /**
- * Gear from H-rail position: Neutral on the crossbar / center;
- * 1–6 only when deep enough into a vertical gate.
+ * Gear from knob position on the H rails.
+ * Easy engage once you push a bit into a gate slot.
  */
-export const resolveHGate = (x, y, neutralRadius = NEUTRAL_RADIUS) => {
-  const p = projectOntoHPattern(x, y)
-  if (Math.hypot(p.x, p.y) < neutralRadius) {
+export const resolveHGate = (x, y) => {
+  if (Math.abs(y) < GATE_THROW) {
     return "N"
   }
 
-  // Still on the horizontal crossbar — not far enough into a gate.
-  if (Math.abs(p.y) < GATE_THROW) {
+  const lane = nearestLaneX(x)
+  if (Math.abs(x - lane) > JUNCTION_EPS * 2) {
     return "N"
   }
 
-  let col = "mid"
-  if (p.x <= -GATE_X * 0.5) {
-    col = "left"
-  } else if (p.x >= GATE_X * 0.5) {
-    col = "right"
-  }
-
-  if (p.y < 0) {
-    if (col === "left") {
+  if (y < 0) {
+    if (lane < -GATE_X * 0.5) {
       return "1"
     }
-    if (col === "right") {
+    if (lane > GATE_X * 0.5) {
       return "5"
     }
     return "3"
   }
 
-  if (col === "left") {
+  if (lane < -GATE_X * 0.5) {
     return "2"
   }
-  if (col === "right") {
+  if (lane > GATE_X * 0.5) {
     return "6"
   }
   return "4"
@@ -478,22 +623,37 @@ const detectListen = (pad) => {
   }
 
   if (listenTarget === "shift") {
-    let bestIndex = -1
-    let bestDelta = 0.35
+    const used = triggerAxisIndexes()
+    const ranked = []
     for (let i = 0; i < pad.axes.length; i += 1) {
+      if (used.has(i)) {
+        continue
+      }
       const raw = axisValue(pad, i)
       const base = listenBaselineAxes?.[i] ?? 0
       const delta = Math.abs(raw - base)
-      if (delta > bestDelta) {
-        bestDelta = delta
-        bestIndex = i
+      if (delta > 0.28) {
+        ranked.push({ index: i, delta })
       }
     }
-    if (bestIndex < 0) {
+    ranked.sort((a, b) => b.delta - a.delta)
+    if (ranked.length === 0) {
       return false
     }
-    const stick = bestIndex <= 1 ? "left" : "right"
-    setShifterStick(stick)
+
+    // Pair with a sibling axis on the same stick when possible.
+    const primary = ranked[0].index
+    let secondary = ranked.find((entry) => Math.abs(entry.index - primary) === 1)?.index
+    if (secondary == null) {
+      const guess = primary % 2 === 0 ? primary + 1 : primary - 1
+      secondary = guess >= 0 && guess < pad.axes.length && !used.has(guess) ? guess : primary
+    }
+    const xIndex = Math.min(primary, secondary)
+    const yIndex = Math.max(primary, secondary)
+    bindings.shifterStick = xIndex <= 1 ? "left" : "right"
+    bindings.shiftX = { type: "axis", index: xIndex }
+    bindings.shiftY = { type: "axis", index: yIndex }
+    persistBindings()
     finishListen()
     return true
   }
@@ -589,53 +749,53 @@ export const pollInput = () => {
   const pad = readPad()
   pollKeyboard()
 
+  const now = performance.now()
+  const dtSec = lastPollAt ? Math.min(0.05, (now - lastPollAt) / 1000) : 0.016
+  lastPollAt = now
+
   let clutch = 0
   let throttle = 0
-  let x = 0
-  let y = 0
+  let stickX = 0
+  let stickY = 0
   let aPressed = keyboard.aHeld
 
   if (pad) {
     detectListen(pad)
 
-    // clutchValue / throttleValue — swap sources via TRIGGER_HARDWARE / debugger.
+    // Pedals stay on TRIGGER_HARDWARE only — never the shifter axes.
     clutch = readHardwareTrigger(pad, "clutch")
     throttle = readHardwareTrigger(pad, "throttle")
 
-    x = axisValue(pad, bindings.shiftX.index)
-    y = axisValue(pad, bindings.shiftY.index)
+    stickX = axisValue(pad, bindings.shiftX.index)
+    stickY = axisValue(pad, bindings.shiftY.index)
     if (bindings.invertShiftY) {
-      y = -y
+      stickY = -stickY
     }
 
-    // Ignition still uses button .value (digital click is fine).
     aPressed = aPressed || readButtonAnalogValue(pad, bindings.ignition.index) > 0.5
   } else {
     clutch = keyboard.clutch
     throttle = keyboard.throttle
   }
 
-  if (!pad && keyboard.gear !== "N") {
+  if (keyboard.gear !== "N") {
     const target = GATE_TARGETS[keyboard.gear] || GATE_TARGETS.N
-    x = target.x
-    y = target.y
-  } else if (pad && keyboard.gear !== "N") {
-    const target = GATE_TARGETS[keyboard.gear] || GATE_TARGETS.N
-    x = target.x
-    y = target.y
+    advanceHKnobToward(target.x, target.y, dtSec)
+  } else if (pad) {
+    advanceHKnobFromStick(stickX, stickY, dtSec)
+  } else {
+    advanceHKnobToward(0, 0, dtSec)
   }
 
-  // Knob + gear intent only travel the H rails (never free 2D diagonals).
-  const onRail = projectOntoHPattern(x, y)
-  const gearIntent = resolveHGate(onRail.x, onRail.y)
+  const gearIntent = resolveHGate(knobX, knobY)
   const aEdge = aPressed && !previousA
   previousA = aPressed
 
   return {
     clutch,
     throttle,
-    x: onRail.x,
-    y: onRail.y,
+    x: knobX,
+    y: knobY,
     gearIntent,
     aPressed,
     aEdge,
