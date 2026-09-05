@@ -8,10 +8,10 @@
  * are digital 0/1 only. Pull the triggers in the debugger, then swap below.
  *
  * Examples that often work on Linux Chrome/Firefox:
- *   clutch:   { source: "axis", index: 2, range: "minus1to1" }
- *   throttle: { source: "axis", index: 5, range: "minus1to1" }
+ *   clutch:   { source: "axis", index: 5, range: "minus1to1" }
+ *   throttle: { source: "axis", index: 4, range: "minus1to1" }
  *   clutch:   { source: "axis", index: 3, range: "zeroToOne" }
- *   throttle: { source: "axis", index: 4, range: "zeroToOne" }
+ *   throttle: { source: "axis", index: 2, range: "zeroToOne" }
  * Windows XInput default:
  *   clutch:   { source: "button", index: 6, range: "zeroToOne" }
  *   throttle: { source: "button", index: 7, range: "zeroToOne" }
@@ -19,15 +19,15 @@
  */
 
 export const TRIGGER_HARDWARE = {
-  // Linux GP365 defaults that give smooth analog pedals.
-  clutch: { source: "axis", index: 2, range: "minus1to1" },
-  throttle: { source: "axis", index: 5, range: "minus1to1" },
+  // Linux GP365: LT/RT as free axes (must not share the shifter stick axes).
+  clutch: { source: "axis", index: 5, range: "minus1to1" },
+  throttle: { source: "axis", index: 4, range: "minus1to1" },
 }
 
 const NEUTRAL_RADIUS = 0.22
 const KEY_RAMP = 0.12
-const STORAGE_KEY = "nightdrive-bindings-v6"
-const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v6"
+const STORAGE_KEY = "nightdrive-bindings-v7"
+const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v7"
 
 /** Ideal stick targets for each H-gate (Y-up is negative on XInput). */
 export const GATE_X = 0.85
@@ -200,14 +200,14 @@ export const projectOntoHPattern = (x, y) => {
 }
 
 export const DEFAULT_BINDINGS = {
-  clutch: { type: "axis", index: 2 },
-  throttle: { type: "axis", index: 5 },
-  // Non-standard Linux pads (mapping: none) usually put right stick on 2/3.
-  shiftX: { type: "axis", index: 2 },
-  shiftY: { type: "axis", index: 3 },
+  clutch: { type: "axis", index: 5 },
+  throttle: { type: "axis", index: 4 },
+  // Left stick stays free of LT/RT axes on Linux (right stick is often 2/3).
+  shiftX: { type: "axis", index: 0 },
+  shiftY: { type: "axis", index: 1 },
   invertShiftY: false,
   ignition: { type: "button", index: 0 },
-  shifterStick: "right",
+  shifterStick: "left",
 }
 
 const keyboard = {

@@ -181,12 +181,12 @@
 
     <div id="cabin" class="relative z-30 flex min-h-screen flex-col">
       <header class="px-6 pt-10 text-center sm:pt-12">
-        <p class="text-sm text-mute">Useless Hackathon · music you have to drive</p>
+        
         <h1 class="mt-2 text-4xl font-bold tracking-tight text-paper sm:text-5xl">
           Stick-Shift Jockey
         </h1>
         <p class="mt-2 text-base text-mute">
-          Manual transmission music player
+          Manual transmission music speed controller
         </p>
       </header>
 
@@ -365,7 +365,7 @@
           id="hint"
           class="mt-5 text-center text-base text-mute sm:text-lg"
         >
-          Connect a controller · LT clutch · RT throttle · right stick H-gate · mash A to start
+          Connect a controller · Axis 5 clutch · Axis 4 throttle · left stick H-gate · mash A to start
         </p>
 
         <section id="bindings-panel" class="bindings-panel mt-5 px-4 py-4 sm:px-5" aria-label="Controller bindings">
@@ -407,8 +407,8 @@
               <p class="text-sm text-mute">Shifter stick</p>
               <label class="sr-only" for="bind-stick">Shifter stick</label>
               <select id="bind-stick" class="bind-select" tabindex="0" aria-label="Choose shifter stick">
-                <option value="right">Right stick</option>
                 <option value="left">Left stick</option>
+                <option value="right">Right stick</option>
               </select>
               <label class="flex items-center gap-2 text-sm text-paper">
                 <input id="bind-invert-y" type="checkbox" tabindex="0" />
