@@ -240,12 +240,69 @@
   animation: cabin-shake 280ms ease-in-out;
 }
 
+.redline-haze {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse 75% 60% at 50% 45%, transparent 35%, rgba(212, 69, 42, 0.22) 100%),
+    radial-gradient(circle at 50% 20%, rgba(224, 135, 42, 0.12), transparent 50%);
+  transition: opacity 120ms linear;
+  mix-blend-mode: screen;
+}
+
+.cabin-body.redline-abuse {
+  --redline-opacity: 0.35;
+}
+
+.cabin-body.redline-abuse .redline-haze {
+  opacity: var(--redline-opacity, 0.35);
+  animation: redline-pulse 420ms ease-in-out infinite;
+}
+
+.cabin-body.redline-abuse-hard .redline-haze {
+  --redline-opacity: 0.7;
+  animation: redline-pulse 220ms ease-in-out infinite;
+}
+
+.cabin-body.redline-abuse #cabin {
+  animation: cabin-shake-loop 95ms linear infinite;
+}
+
+.cabin-body.redline-abuse-hard #cabin {
+  animation: cabin-shake-hard 55ms linear infinite;
+}
+
+.cabin-body.redline-abuse .dash-panel {
+  animation: dash-jitter 110ms steps(2, end) infinite;
+  box-shadow: inset 0 0 0 1px rgba(212, 69, 42, 0.45);
+}
+
+.cabin-body.redline-abuse-hard .dash-panel {
+  animation: dash-jitter 70ms steps(2, end) infinite;
+  box-shadow:
+    inset 0 0 0 1px rgba(212, 69, 42, 0.75),
+    0 0 28px rgba(212, 69, 42, 0.25);
+}
+
+.cabin-body.redline-abuse .rpm-readout,
+.cabin-body.redline-abuse #rpm-readout {
+  color: var(--danger);
+  animation: rpm-flash 180ms steps(2, end) infinite;
+}
+
 .redline-active #redline-flag {
   display: block;
 }
 
 .redline-active .tach-redline {
   opacity: 1;
+}
+
+.cabin-body.redline-abuse .tach-redline {
+  animation: tach-glow 160ms ease-in-out infinite alternate;
 }
 
 @keyframes cabin-shake {
@@ -264,6 +321,90 @@
   }
   80% {
     transform: translate(4px, 1px);
+  }
+}
+
+@keyframes cabin-shake-loop {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(-3px, 1px);
+  }
+  50% {
+    transform: translate(4px, -2px);
+  }
+  75% {
+    transform: translate(-2px, -1px);
+  }
+  100% {
+    transform: translate(2px, 2px);
+  }
+}
+
+@keyframes cabin-shake-hard {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  20% {
+    transform: translate(-7px, 3px) rotate(-0.35deg);
+  }
+  40% {
+    transform: translate(8px, -4px) rotate(0.4deg);
+  }
+  60% {
+    transform: translate(-6px, -3px) rotate(-0.25deg);
+  }
+  80% {
+    transform: translate(5px, 2px) rotate(0.3deg);
+  }
+  100% {
+    transform: translate(-3px, 1px) rotate(0deg);
+  }
+}
+
+@keyframes redline-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.35);
+  }
+}
+
+@keyframes dash-jitter {
+  0% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(1px, -1px);
+  }
+  100% {
+    transform: translate(-1px, 1px);
+  }
+}
+
+@keyframes rpm-flash {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes tach-glow {
+  from {
+    opacity: 0.75;
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  to {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(212, 69, 42, 0.85));
   }
 }
 

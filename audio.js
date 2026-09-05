@@ -28,7 +28,10 @@ let objectUrl = null
 let graphReady = false
 let lastClutchMuffle = -1
 let lastRedlineWet = -1
+let lastRedlineAbuse = -1
 let lastPlaybackRate = 1
+let lastKnockAt = 0
+let abuseEngine = null
 const distortionCurveCache = new Map()
 
 let decodedBuffer = null
@@ -296,13 +299,151 @@ export const setRedlineDistortion = (amount) => {
     return
   }
   const wet = Math.min(1, Math.max(0, amount))
-  if (Math.abs(wet - lastRedlineWet) < 0.03) {
+  if (Math.abs(wet - lastRedlineWet) < 0.02) {
     return
   }
   lastRedlineWet = wet
   shaper.curve = getDistortionCurve(wet)
-  dryGain.gain.setTargetAtTime(1 - wet * 0.85, audioContext.currentTime, 0.05)
-  wetGain.gain.setTargetAtTime(wet, audioContext.currentTime, 0.05)
+  // Harder wet mix so the track screams like an overdriven engine.
+  dryGain.gain.setTargetAtTime(1 - wet * 0.92, audioContext.currentTime, 0.04)
+  wetGain.gain.setTargetAtTime(wet * 1.05, audioContext.currentTime, 0.04)
+}
+
+const ensureAbuseEngine = () => {
+  if (abuseEngine) {
+    return abuseEngine
+  }
+  const ctx = ensureContext()
+  connectGraph()
+
+  const gain = ctx.createGain()
+  gain.gain.value = 0
+
+  const tremolo = ctx.createGain()
+  tremolo.gain.value = 1
+
+  const filter = ctx.createBiquadFilter()
+  filter.type = "bandpass"
+  filter.frequency.value = 700
+  filter.Q.value = 1.6
+
+  const osc = ctx.createOscillator()
+  osc.type = "sawtooth"
+  osc.frequency.value = 52
+
+  const osc2 = ctx.createOscillator()
+  osc2.type = "square"
+  osc2.frequency.value = 104
+
+  const noise = ctx.createBufferSource()
+  noise.buffer = noiseBuffer(ctx, 1.2)
+  noise.loop = true
+
+  const noiseGain = ctx.createGain()
+  noiseGain.gain.value = 0.45
+
+  const lfo = ctx.createOscillator()
+  lfo.type = "sine"
+  lfo.frequency.value = 18
+  const lfoGain = ctx.createGain()
+  lfoGain.gain.value = 0
+  lfo.connect(lfoGain)
+  lfoGain.connect(tremolo.gain)
+
+  osc.connect(filter)
+  osc2.connect(filter)
+  noise.connect(noiseGain)
+  noiseGain.connect(filter)
+  filter.connect(gain)
+  gain.connect(tremolo)
+  tremolo.connect(sfxGain)
+
+  osc.start()
+  osc2.start()
+  noise.start()
+  lfo.start()
+
+  abuseEngine = { gain, tremolo, filter, osc, osc2, noise, noiseGain, lfo, lfoGain }
+  return abuseEngine
+}
+
+const playRedlineKnock = (intensity) => {
+  const ctx = ensureContext()
+  connectGraph()
+  const now = ctx.currentTime
+  const burst = ctx.createBufferSource()
+  burst.buffer = noiseBuffer(ctx, 0.08)
+  const bp = ctx.createBiquadFilter()
+  bp.type = "bandpass"
+  bp.frequency.value = 1200 + intensity * 1800
+  bp.Q.value = 6
+  const g = ctx.createGain()
+  g.gain.setValueAtTime(0.001, now)
+  g.gain.exponentialRampToValueAtTime(0.22 + intensity * 0.28, now + 0.008)
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.09)
+  burst.connect(bp)
+  bp.connect(g)
+  g.connect(sfxGain)
+  burst.start(now)
+  burst.stop(now + 0.1)
+
+  const clang = ctx.createOscillator()
+  clang.type = "triangle"
+  clang.frequency.setValueAtTime(220 + intensity * 160, now)
+  clang.frequency.exponentialRampToValueAtTime(70, now + 0.12)
+  const cg = ctx.createGain()
+  cg.gain.setValueAtTime(0.12 + intensity * 0.1, now)
+  cg.gain.exponentialRampToValueAtTime(0.001, now + 0.14)
+  clang.connect(cg)
+  cg.connect(sfxGain)
+  clang.start(now)
+  clang.stop(now + 0.15)
+}
+
+/**
+ * Sustained redline abuse: crush the track + layer an engine scream.
+ * intensity 0..1 (0 = idle clean, 1 = full blast).
+ */
+export const setRedlineAbuse = (intensity) => {
+  const t = Math.min(1, Math.max(0, Number(intensity) || 0))
+  connectGraph()
+  const ctx = audioContext
+  if (!ctx) {
+    return
+  }
+
+  // Valve knock keeps firing even when intensity is steady.
+  if (t > 0.5) {
+    const now = performance.now()
+    const gap = 260 - t * 140
+    if (now - lastKnockAt > gap) {
+      lastKnockAt = now
+      playRedlineKnock(t)
+    }
+  }
+
+  if (Math.abs(t - lastRedlineAbuse) < 0.015 && t > 0.02 && t < 0.98) {
+    return
+  }
+  lastRedlineAbuse = t
+
+  // Music overdrive ramps from mild grit to full blast.
+  const wet = t < 0.02 ? 0 : 0.28 + t * 0.72
+  setRedlineDistortion(wet)
+
+  if (masterGain) {
+    masterGain.gain.setTargetAtTime(1 + t * 0.55, ctx.currentTime, 0.07)
+  }
+
+  const nodes = ensureAbuseEngine()
+  const scream = t < 0.1 ? 0 : 0.05 + t * t * 0.62
+  nodes.gain.gain.setTargetAtTime(scream, ctx.currentTime, 0.05)
+  nodes.lfoGain.gain.setTargetAtTime(scream * 0.35, ctx.currentTime, 0.08)
+  nodes.filter.frequency.setTargetAtTime(550 + t * 2600, ctx.currentTime, 0.06)
+  nodes.osc.frequency.setTargetAtTime(48 + t * 55, ctx.currentTime, 0.05)
+  nodes.osc2.frequency.setTargetAtTime(96 + t * 110, ctx.currentTime, 0.05)
+  nodes.noiseGain.gain.setTargetAtTime(0.25 + t * 0.55, ctx.currentTime, 0.06)
+  nodes.lfo.frequency.setTargetAtTime(12 + t * 28, ctx.currentTime, 0.08)
 }
 
 export const setPlaybackReverse = (wantReverse) => {

@@ -732,6 +732,84 @@ const readPad = () => {
   return null
 }
 
+let lastHapticAt = 0
+let hapticBuzzing = false
+
+const stopPadHaptics = (pad) => {
+  const actuator = pad?.vibrationActuator
+  if (actuator && typeof actuator.reset === "function") {
+    try {
+      actuator.reset()
+    } catch (error) {
+      /* ignore */
+    }
+  }
+  hapticBuzzing = false
+}
+
+/**
+ * Redline cabin shake → dual-rumble. Same intensity curve as visual abuse (0..1).
+ * Soft buzz from ~0.12, hard low-freq rumble ramps with intensity.
+ */
+export const setRedlineHaptics = (intensity) => {
+  const t = Math.min(1, Math.max(0, Number(intensity) || 0))
+  const pad = readPad()
+  if (!pad) {
+    hapticBuzzing = false
+    return
+  }
+
+  const actuator = pad.vibrationActuator
+  if (!actuator || typeof actuator.playEffect !== "function") {
+    return
+  }
+
+  // Match CSS: shake starts above ~0.12 abuse.
+  if (t < 0.12) {
+    if (hapticBuzzing) {
+      stopPadHaptics(pad)
+    }
+    return
+  }
+
+  const now = performance.now()
+  // Overlapping short pulses keep a continuous rumble without stacking forever.
+  if (now - lastHapticAt < 65) {
+    return
+  }
+  lastHapticAt = now
+  hapticBuzzing = true
+
+  const weak = Math.min(1, 0.12 + t * 0.6)
+  // Strong motor follows the hard-shake ramp (kicks harder past ~0.55).
+  const strong = Math.min(1, t < 0.55 ? t * 0.55 : 0.3 + (t - 0.55) * 1.55)
+
+  try {
+    const effect = actuator.playEffect("dual-rumble", {
+      startDelay: 0,
+      duration: 85,
+      weakMagnitude: weak,
+      strongMagnitude: strong,
+    })
+    if (effect && typeof effect.catch === "function") {
+      effect.catch(() => {
+        /* unsupported effect / permission */
+      })
+    }
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+export const stopRedlineHaptics = () => {
+  const pad = readPad()
+  if (pad) {
+    stopPadHaptics(pad)
+  } else {
+    hapticBuzzing = false
+  }
+}
+
 const pollKeyboard = () => {
   if (keyboard.clutchHeld) {
     keyboard.clutch = Math.min(1, keyboard.clutch + KEY_RAMP)

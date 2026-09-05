@@ -18,6 +18,8 @@ import {
   setInvertShiftY,
   setShifterStick,
   setTriggerHardware,
+  setRedlineHaptics,
+  stopRedlineHaptics,
   startGamepadLoop,
   startListening,
   stopListening,
@@ -119,6 +121,7 @@ const car = {
   virtualSpeed: 0,
   redlineMs: 0,
   inRedline: false,
+  redlineAbuse: 0,
   lastClutch: 0,
   grindAt: 0,
   crankPresses: [],
@@ -133,6 +136,7 @@ const qs = (id) => document.getElementById(id)
 
 const bindUi = () => {
   ui.cabin = qs("cabin")
+  ui.redlineHaze = qs("redline-haze")
   ui.trackName = qs("track-name")
   ui.upload = qs("track-upload")
   ui.toggle = qs("radio-toggle")
@@ -446,7 +450,9 @@ const beginStall = async () => {
   car.audioPlayPending = false
   audio.playEngineStall()
   await audio.scratchToStop()
-  audio.setRedlineDistortion(0)
+  car.redlineAbuse = 0
+  audio.setRedlineAbuse(0)
+  stopRedlineHaptics()
   audio.setClutchMuffle(0)
   car.rpm = 0
   car.targetRpm = 0
@@ -486,7 +492,9 @@ const driveDrivetrain = (input, dt) => {
     audio.setPlaybackReverse(false)
     audio.setPlaybackRate(1)
     audio.setClutchMuffle(0)
-    audio.setRedlineDistortion(0)
+    car.redlineAbuse = 0
+    audio.setRedlineAbuse(0)
+    stopRedlineHaptics()
     car.virtualSpeed = 0
     car.targetRpm = car.state === STATE.CRANKING ? 450 : 0
     car.inRedline = false
@@ -576,11 +584,13 @@ const driveDrivetrain = (input, dt) => {
     car.rpm >= MAX_RPM - 80 || (atCap && throttle > 0.15 && car.rpm >= MAX_RPM - 500)
   if (car.inRedline) {
     car.redlineMs += dt
-    audio.setRedlineDistortion(Math.min(1, 0.35 + car.redlineMs / 2000))
   } else {
-    car.redlineMs = Math.max(0, car.redlineMs - dt * 1.5)
-    audio.setRedlineDistortion(Math.min(0.15, car.redlineMs / 2500))
+    car.redlineMs = Math.max(0, car.redlineMs - dt * 1.8)
   }
+  // Abuse builds after ~0.6s at redline, full blast by ~3s held.
+  car.redlineAbuse = Math.min(1, Math.max(0, (car.redlineMs - 600) / 2400))
+  audio.setRedlineAbuse(car.redlineAbuse)
+  setRedlineHaptics(car.redlineAbuse)
 
   // --- Song follows virtualSpeed 1:1 (R plays backward) ---
   const songRate = Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed))
@@ -620,6 +630,14 @@ const updateTach = () => {
   ui.needleArm.setAttribute("transform", `rotate(${angle} ${TACH_CX} ${TACH_CY})`)
   ui.rpmReadout.textContent = String(Math.round(rpm)).padStart(4, "0")
   ui.cluster.classList.toggle("redline-active", car.inRedline)
+
+  const body = document.body
+  const abuse = car.redlineAbuse
+  body.classList.toggle("redline-abuse", abuse > 0.12)
+  body.classList.toggle("redline-abuse-hard", abuse > 0.55)
+  if (ui.redlineHaze) {
+    body.style.setProperty("--redline-opacity", String(0.2 + abuse * 0.55))
+  }
 }
 
 const updatePedals = (input) => {
@@ -669,9 +687,13 @@ const updateChrome = (input) => {
     const atSongCap = ceiling > 0 && car.virtualSpeed >= ceiling * 0.95
     if (atSongCap && input.throttle > 0.15) {
       ui.hint.textContent =
-        car.gear === "5" || car.gear === "R"
-          ? "Redline · ease off or shift"
-          : "Redline · shift up for more song speed"
+        car.redlineAbuse > 0.45
+          ? "ENGINE SCREAMING · shift up before it melts"
+          : car.gear === "5" || car.gear === "R"
+            ? "Redline · ease off or shift"
+            : "Redline · shift up for more song speed"
+    } else if (car.redlineAbuse > 0.35) {
+      ui.hint.textContent = "ENGINE SCREAMING · clutch in and shift up"
     } else if (car.inRedline || car.rpm > MAX_RPM - 900) {
       ui.hint.textContent = "Redline · clutch in and shift up"
     } else if (car.gear !== "N" && car.virtualSpeed > PLAY_SPEED_MIN) {
