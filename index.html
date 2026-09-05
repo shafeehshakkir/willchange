@@ -50,10 +50,10 @@
       id="guide-panel"
       class="guide-panel"
       aria-hidden="true"
-      aria-label="How to drive Stick-Shift Jockey"
+      aria-label="How to use Stick-Shift Jockey"
     >
       <div class="guide-header">
-        <h2 class="text-lg font-semibold text-paper">How to drive</h2>
+        <h2 class="text-lg font-semibold text-paper">How to use</h2>
         <button
           id="guide-close"
           type="button"
@@ -65,50 +65,109 @@
         </button>
       </div>
       <div class="guide-body">
-        <h3>1. Load a song</h3>
-        <p>Click <strong>Load MP3</strong> and pick a file. Click once on the page so the browser allows sound.</p>
+        <h3>What this is</h3>
+        <p>
+          <strong>Stick-Shift Jockey</strong> is a manual-transmission music player.
+          Your uploaded song is the car: clutch, H-pattern shifter, and throttle control
+          playback speed. Higher gears unlock faster (nearer-normal) song speed.
+        </p>
 
-        <h3>2. Start the engine</h3>
-        <p>Mash <kbd>A</kbd> (or <kbd>Space</kbd> / the <strong>Crank</strong> button) about 5 times quickly until the engine catches.</p>
-
-        <h3>3. Pedals</h3>
-        <ul>
-          <li><strong id="guide-clutch-bind">Clutch</strong> — bar matches how hard you press</li>
-          <li><strong id="guide-throttle-bind">Throttle</strong> — same idea, variable pressure</li>
-        </ul>
-
-        <h3>4. Shift the H-gate</h3>
+        <h3>Quick start</h3>
         <ol>
-          <li>Press the clutch in past about 70%</li>
-          <li>Flick the <span id="guide-stick-bind">right stick</span> toward a gear — the knob completes the H path and snaps into that gate</li>
-          <li>Release the stick anytime; it finishes the move. No mid-rail parking and no diagonal teleports</li>
-          <li>Ease the clutch out while adding throttle so you don’t stall</li>
+          <li>Click once on the page so the browser allows audio.</li>
+          <li>Click <strong>Load MP3</strong> and pick a track.</li>
+          <li>Mash ignition (<kbd>A</kbd> / <kbd>Space</kbd> / <strong>Crank</strong>) about <strong>5 times quickly</strong> until the engine catches.</li>
+          <li>Clutch in → select <strong>1</strong> → feed throttle → ease the clutch out.</li>
+          <li>When the tach climbs toward redline, clutch in and shift up for more song speed.</li>
         </ol>
 
-        <h3>5. Drive the music</h3>
-        <p>
-          Every gear plays the song — 1st is a clear half-speed cruise. Higher gears unlock faster playback toward normal speed.
-          Push too hard in a low gear and you hit redline (shift up for more song speed). Clutch in to free-rev; dump it at low RPM and you’ll stall.
-        </p>
+        <h3>Pedals</h3>
+        <ul>
+          <li><strong id="guide-clutch-bind">Clutch</strong> — hold in to disconnect the engine (free-rev / shift safely)</li>
+          <li><strong id="guide-throttle-bind">Throttle</strong> — builds road speed (song speed) while the clutch is engaged</li>
+          <li>Bars on the dash follow pressure 1:1</li>
+        </ul>
+
+        <h3>H-gate shifter</h3>
+        <ol>
+          <li>Press clutch past about <strong>70%</strong> before changing gear</li>
+          <li>Move the <span id="guide-stick-bind">left stick</span> toward a gate — the knob travels the H rails and snaps into gear</li>
+          <li>Release the stick anytime; it finishes the path (no mid-rail parking, no diagonal teleports)</li>
+          <li>Ease clutch out while adding throttle so you don’t stall</li>
+          <li>Gates: <strong>1–5</strong> forward · <strong>R</strong> bottom-right (song plays backward)</li>
+        </ol>
+
+        <h3>Driving the song</h3>
+        <ul>
+          <li>Every gear plays the song — <strong>1st</strong> is a clear slower cruise</li>
+          <li>Higher gears unlock faster playback toward (and a bit past) normal speed</li>
+          <li>At a gear’s ceiling, more throttle redlines instead of going faster — <strong>shift up</strong></li>
+          <li>Clutch in to free-rev the tach; dump the clutch at low RPM and you’ll stall</li>
+          <li>Hold redline too long and the cabin shakes / the track gets crushed</li>
+        </ul>
+
+        <h3>Reading the dash</h3>
+        <ul>
+          <li><strong>Tachometer</strong> — engine RPM (red zone = redline)</li>
+          <li><strong>Gear</strong> — current gate · status under it (Running / Stalled / …)</li>
+          <li><strong>Hint line</strong> — live tip, e.g. <em>Gear 4 · song 0.96×</em></li>
+          <li><strong>Synthwave backdrop</strong> — reacts to song speed and the track’s energy (visual only)</li>
+        </ul>
 
         <h3>Mistakes</h3>
         <ul>
-          <li><strong>Grind</strong> — changing gear with clutch below ~70% (change rejected)</li>
-          <li><strong>Stall</strong> — RPM falls below ~400 while in gear with the clutch out</li>
-          <li>If stalled, mash <kbd>A</kbd> again to restart</li>
+          <li><strong>Grind</strong> — shift with clutch below ~70% (change rejected, grind SFX)</li>
+          <li><strong>Stall</strong> — RPM under ~400 while locked in gear → restart by mashing <kbd>A</kbd></li>
+          <li><strong>Redline</strong> — ease off or shift up; holding it abuses the “engine”</li>
         </ul>
 
-        <h3>Keyboard</h3>
+        <h3>Keyboard fallback</h3>
         <ul>
           <li><kbd>Q</kbd> clutch · <kbd>E</kbd> throttle</li>
-          <li><kbd>1</kbd>–<kbd>5</kbd> gears · <kbd>6</kbd> reverse · <kbd>0</kbd>/<kbd>N</kbd> neutral</li>
-          <li><kbd>Space</kbd> ignition · <kbd>?</kbd> toggle this guide</li>
+          <li><kbd>1</kbd>–<kbd>5</kbd> gears · <kbd>6</kbd> reverse · <kbd>0</kbd> / <kbd>N</kbd> neutral</li>
+          <li><kbd>Space</kbd> ignition crank · <kbd>?</kbd> toggle this guide · <kbd>Esc</kbd> close guide</li>
         </ul>
 
-        <h3>Bindings</h3>
+        <h3>Controller bindings</h3>
         <p id="guide-bindings-line">
           Use the bindings panel under the dash if your controller mapping feels wrong.
         </p>
+        <ul>
+          <li>Click <strong>Listen</strong> on Clutch, Throttle, Shifter, or Ignition, then press / move that control</li>
+          <li>Pick left or right stick for the H-gate · toggle <strong>Invert shift Y</strong> if up/down feel backwards</li>
+          <li><strong>Reset bindings</strong> restores defaults</li>
+          <li>On Linux, triggers are often <strong>axes</strong> (smooth) while buttons[6]/[7] are only digital on/off</li>
+        </ul>
+
+        <h3>Gamepad debugger</h3>
+        <p>
+          The debugger at the bottom shows raw hardware so you can map pedals correctly
+          (especially on Linux / generic pads).
+        </p>
+        <ol>
+          <li>Connect the pad and press any button so the browser sees it — the pad name appears at the top of the debugger</li>
+          <li>Pull <strong>LT / RT slowly</strong> and watch <code>buttons[6]</code>, <code>buttons[7]</code>, and the <code>axes[]</code> list</li>
+          <li>If a button jumps <strong>0↔1</strong> only, find an axis that moves smoothly from low → high while you pull that trigger</li>
+          <li>Set <strong>source</strong> to <code>axis</code> (or <code>button</code>), enter the index, pick range:
+            <ul>
+              <li><code>axis -1→1</code> — common on Linux (rest near −1, full pull near +1)</li>
+              <li><code>axis 0→1</code> — rest at 0, full pull at 1</li>
+            </ul>
+          </li>
+          <li>Click <strong>Apply clutch</strong> / <strong>Apply throttle</strong> — the mapped values and the dash bars should track your foot</li>
+          <li>Confirm the hint / bindings line updates so the whole page uses the new map</li>
+        </ol>
+        <p>
+          Tip: clutch and throttle must not share the same axis as the shifter stick.
+          If a pedal feels stuck at 0 or 100%, try the other axis range or a different index.
+        </p>
+
+        <h3>Tips</h3>
+        <ul>
+          <li>Serve the folder over HTTP (e.g. Live Server) — ES modules need it</li>
+          <li>Hard-refresh after updates if something looks cached</li>
+          <li>Xbox-style pads work best; cheap USB pads may need the debugger for analog triggers</li>
+        </ul>
       </div>
     </aside>
 
@@ -201,13 +260,15 @@
                   fill="none"
                   stroke="currentColor"
                   stroke-width="8"
+                  stroke-linecap="butt"
                 />
                 <path
                   class="tach-redline"
-                  d="M186 40 A100 100 0 0 1 220 120"
+                  d="M178.8 39.1 A100 100 0 0 1 220 120"
                   fill="none"
                   stroke="currentColor"
                   stroke-width="8"
+                  stroke-linecap="butt"
                 />
                 <g id="tach-ticks" class="tach-ticks" aria-hidden="true"></g>
                 <g id="tach-needle-arm" transform="rotate(180 120 120)">

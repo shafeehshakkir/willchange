@@ -502,6 +502,19 @@
   color: var(--mute);
 }
 
+.guide-body code {
+  font-size: 0.86em;
+  padding: 0.08em 0.35em;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--paper);
+  border-radius: 3px;
+}
+
+.guide-body ul ul {
+  margin-top: 0.35rem;
+}
+
 .guide-body strong {
   color: var(--paper);
   font-weight: 600;
