@@ -16,9 +16,13 @@
 }
 
 .night-sky {
-  background:
-    radial-gradient(ellipse 70% 45% at 50% 0%, #2a3140 0%, transparent 55%),
-    linear-gradient(180deg, #151820 0%, #111111 55%, #0d0d0d 100%);
+  /* Light vignette only — synthwave canvas paints the sky. */
+  background: radial-gradient(
+    ellipse 85% 75% at 50% 40%,
+    transparent 35%,
+    rgba(0, 0, 0, 0.28) 100%
+  );
+  pointer-events: none;
 }
 
 .windshield-glass {
@@ -28,6 +32,7 @@
     transparent 45%,
     rgba(0, 0, 0, 0.45) 100%
   );
+  pointer-events: none;
 }
 
 .radio-bezel,

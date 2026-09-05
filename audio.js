@@ -4,6 +4,7 @@
  *   wet -> waveshaper (redline overdrive) -> wet gain
  *   dry -> dry gain
  *   both -> master gain -> destination
+ *   (analyser is a silent side-tap off master for visuals only)
  * Reverse gear uses a reversed AudioBuffer into bufferGate -> lowpass
  * (Chromium cannot use negative HTMLMediaElement.playbackRate).
  *
@@ -23,6 +24,8 @@ let shaper = null
 let dryGain = null
 let wetGain = null
 let masterGain = null
+let analyser = null
+let freqData = null
 let sfxGain = null
 let objectUrl = null
 let graphReady = false
@@ -117,6 +120,12 @@ const connectGraph = () => {
   masterGain = ctx.createGain()
   masterGain.gain.value = 1
 
+  // Side-tap only — never sit in the audible path, so visuals can't break playback.
+  analyser = ctx.createAnalyser()
+  analyser.fftSize = 256
+  analyser.smoothingTimeConstant = 0.75
+  freqData = new Uint8Array(analyser.frequencyBinCount)
+
   sfxGain = ctx.createGain()
   sfxGain.gain.value = 0.85
 
@@ -129,6 +138,7 @@ const connectGraph = () => {
   dryGain.connect(masterGain)
   wetGain.connect(masterGain)
   masterGain.connect(ctx.destination)
+  masterGain.connect(analyser)
   sfxGain.connect(ctx.destination)
 
   graphReady = true
@@ -654,6 +664,38 @@ export const isPlaying = () => {
   }
   const track = getTrack()
   return !track.paused && !track.ended
+}
+
+/** Safe spectrum snapshot for visuals — never throws, never affects audio routing. */
+export const getMusicLevels = () => {
+  try {
+    if (!analyser || !freqData) {
+      return { bass: 0, mid: 0, treble: 0, energy: 0, bins: null }
+    }
+    analyser.getByteFrequencyData(freqData)
+    const n = freqData.length
+    const band = (from, to) => {
+      let sum = 0
+      const start = Math.floor(from * n)
+      const end = Math.max(start + 1, Math.floor(to * n))
+      for (let i = start; i < end; i += 1) {
+        sum += freqData[i]
+      }
+      return sum / ((end - start) * 255)
+    }
+    const bass = band(0, 0.12)
+    const mid = band(0.12, 0.45)
+    const treble = band(0.45, 1)
+    return {
+      bass,
+      mid,
+      treble,
+      energy: bass * 0.5 + mid * 0.35 + treble * 0.15,
+      bins: freqData,
+    }
+  } catch (error) {
+    return { bass: 0, mid: 0, treble: 0, energy: 0, bins: null }
+  }
 }
 
 const noiseBuffer = (ctx, seconds) => {

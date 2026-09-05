@@ -18,12 +18,11 @@ import {
   setInvertShiftY,
   setShifterStick,
   setTriggerHardware,
-  setRedlineHaptics,
-  stopRedlineHaptics,
   startGamepadLoop,
   startListening,
   stopListening,
 } from "./gamepad.js"
+import { initSynthwave, setSynthwaveState } from "./synthwave.js"
 
 /** Gear ratios — tuned so cruise ≈ 3.5k RPM, ceiling push climbs to redline. R = reverse. */
 const GEAR_RATIO = {
@@ -110,7 +109,6 @@ const STATE = {
 }
 
 const ui = {}
-const rainDrops = []
 
 const car = {
   state: STATE.OFF,
@@ -156,7 +154,7 @@ const bindUi = () => {
   ui.hint = qs("hint")
   ui.knob = qs("h-knob")
   ui.gate = qs("h-gate")
-  ui.rain = qs("rain-canvas")
+  ui.synthwave = qs("synthwave-canvas")
   ui.bindStatus = qs("bind-status")
   ui.bindClutch = qs("bind-clutch")
   ui.bindThrottle = qs("bind-throttle")
@@ -452,7 +450,6 @@ const beginStall = async () => {
   await audio.scratchToStop()
   car.redlineAbuse = 0
   audio.setRedlineAbuse(0)
-  stopRedlineHaptics()
   audio.setClutchMuffle(0)
   car.rpm = 0
   car.targetRpm = 0
@@ -494,7 +491,6 @@ const driveDrivetrain = (input, dt) => {
     audio.setClutchMuffle(0)
     car.redlineAbuse = 0
     audio.setRedlineAbuse(0)
-    stopRedlineHaptics()
     car.virtualSpeed = 0
     car.targetRpm = car.state === STATE.CRANKING ? 450 : 0
     car.inRedline = false
@@ -590,7 +586,6 @@ const driveDrivetrain = (input, dt) => {
   // Abuse builds after ~0.6s at redline, full blast by ~3s held.
   car.redlineAbuse = Math.min(1, Math.max(0, (car.redlineMs - 600) / 2400))
   audio.setRedlineAbuse(car.redlineAbuse)
-  setRedlineHaptics(car.redlineAbuse)
 
   // --- Song follows virtualSpeed 1:1 (R plays backward) ---
   const songRate = Math.max(PLAY_SPEED_MIN, Math.min(2, car.virtualSpeed))
@@ -768,44 +763,26 @@ const handleBindListen = (target) => {
   syncBindingLabels()
 }
 
-const initRain = () => {
-  const canvas = ui.rain
-  const ctx = canvas.getContext("2d")
-  const resize = () => {
-    canvas.width = window.innerWidth
-    canvas.height = window.innerHeight
-  }
-  resize()
-  window.addEventListener("resize", resize)
-
-  for (let i = 0; i < 140; i += 1) {
-    rainDrops.push({
-      x: Math.random() * window.innerWidth,
-      y: Math.random() * window.innerHeight,
-      len: 10 + Math.random() * 18,
-      speed: 8 + Math.random() * 14,
+const pushSynthwave = () => {
+  // Visual-only — never throw into drivetrain / input.
+  try {
+    const levels = audio.getMusicLevels()
+    setSynthwaveState({
+      speed: car.virtualSpeed,
+      rpm: car.rpm,
+      abuse: car.redlineAbuse,
+      playing: car.state === STATE.RUNNING && car.virtualSpeed > PLAY_SPEED_MIN && audio.isPlaying(),
+      reverse: car.gear === "R",
+      engineOn: car.state === STATE.RUNNING,
+      bass: levels.bass,
+      mid: levels.mid,
+      treble: levels.treble,
+      energy: levels.energy,
+      bins: levels.bins,
     })
+  } catch (error) {
+    /* ignore visual failures */
   }
-
-  const drawRain = () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.strokeStyle = "rgba(180, 200, 220, 0.22)"
-    ctx.lineWidth = 1
-    for (const drop of rainDrops) {
-      ctx.beginPath()
-      ctx.moveTo(drop.x, drop.y)
-      ctx.lineTo(drop.x + 2, drop.y + drop.len)
-      ctx.stroke()
-      drop.y += drop.speed
-      drop.x += 0.8
-      if (drop.y > canvas.height) {
-        drop.y = -20
-        drop.x = Math.random() * canvas.width
-      }
-    }
-    window.requestAnimationFrame(drawRain)
-  }
-  window.requestAnimationFrame(drawRain)
 }
 
 const expireCrank = (now) => {
@@ -847,6 +824,7 @@ const tick = (input, timestamp) => {
     car.lastClutch = input.clutch
     updateChrome(input)
     updateGamepadDebugger()
+    pushSynthwave()
     return
   }
 
@@ -868,6 +846,7 @@ const tick = (input, timestamp) => {
 
   updateChrome(input)
   updateGamepadDebugger()
+  pushSynthwave()
 }
 
 const handleUploadKey = (event) => {
@@ -881,7 +860,13 @@ const boot = () => {
   bindUi()
   audio.initAudio()
   initKeyboardFallback()
-  initRain()
+  try {
+    if (ui.synthwave) {
+      initSynthwave(ui.synthwave)
+    }
+  } catch (error) {
+    console.warn("[stick-shift] synthwave init skipped", error)
+  }
 
   drawTachTicks()
   syncBindingLabels()
