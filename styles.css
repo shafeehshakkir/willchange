@@ -87,6 +87,17 @@
   color: #777;
 }
 
+.tach-label {
+  fill: #8a8a8a;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+}
+
+.tach-label-hot {
+  fill: var(--danger);
+}
+
 #redline-flag {
   display: none;
 }
@@ -138,7 +149,7 @@
 }
 
 .h-label[data-gate="5"],
-.h-label-bottom[data-gate="6"] {
+.h-label-bottom[data-gate="R"] {
   right: 8px;
   left: auto;
 }

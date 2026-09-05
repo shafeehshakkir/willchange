@@ -34,14 +34,16 @@ export const GATE_X = 0.85
 export const GATE_Y = 0.85
 const LANE_XS = [-GATE_X, 0, GATE_X]
 const JUNCTION_EPS = 0.08
-const STICK_DEADZONE = 0.28
-const STICK_LANE = 0.4
-const STICK_THROW = 0.4
+const STICK_DEADZONE = 0.2
+const STICK_LANE = 0.28
+const STICK_THROW = 0.28
 /** Knob travel speed along rails (units / second) — snappy gate-to-gate. */
-const H_MOVE_SPEED = 7.5
-const H_KEY_SPEED = 10
+const H_MOVE_SPEED = 11
+const H_KEY_SPEED = 12
 /** How close before we snap onto a detent. */
 const DETENT_SNAP = 0.06
+/** How close the knob must be to a gear end to engage that gear. */
+const GEAR_ENGAGE_RADIUS = 0.35
 
 export const GATE_TARGETS = {
   N: { x: 0, y: 0 },
@@ -52,7 +54,7 @@ export const GATE_TARGETS = {
   3: { x: 0, y: -GATE_Y },
   4: { x: 0, y: GATE_Y },
   5: { x: GATE_X, y: -GATE_Y },
-  6: { x: GATE_X, y: GATE_Y },
+  R: { x: GATE_X, y: GATE_Y },
 }
 
 /** Live knob position — always on the H pathway (never free 2D). */
@@ -97,7 +99,7 @@ const setKnobTarget = (id) => {
 
 /**
  * Map stick deflection to a discrete H detent.
- * Lane from X, gear vs neutral from Y — always a real resting position.
+ * Diagonal flicks pick the nearest gear corner; light X-only picks lane neutral.
  */
 const detentFromStick = (stickX, stickY) => {
   const sx = applyStickDeadzone(stickX)
@@ -106,40 +108,31 @@ const detentFromStick = (stickX, stickY) => {
     return null
   }
 
-  let lane = "mid"
+  // Clear vertical throw → nearest gear detent (diagonals count).
+  if (Math.abs(sy) >= STICK_THROW) {
+    const gears = ["1", "2", "3", "4", "5", "R"]
+    let bestId = sy < 0 ? "3" : "4"
+    let bestDist = Infinity
+    for (const gear of gears) {
+      const target = GATE_TARGETS[gear]
+      // Stick space roughly matches gate targets (±1).
+      const dist = Math.hypot(sx - target.x, sy - target.y)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestId = gear
+      }
+    }
+    return bestId
+  }
+
+  // Mostly horizontal → lane neutral / center N.
   if (sx <= -STICK_LANE) {
-    lane = "left"
-  } else if (sx >= STICK_LANE) {
-    lane = "right"
+    return "NL"
   }
-
-  if (Math.abs(sy) < STICK_THROW) {
-    if (lane === "left") {
-      return "NL"
-    }
-    if (lane === "right") {
-      return "NR"
-    }
-    return "N"
+  if (sx >= STICK_LANE) {
+    return "NR"
   }
-
-  if (sy < 0) {
-    if (lane === "left") {
-      return "1"
-    }
-    if (lane === "right") {
-      return "5"
-    }
-    return "3"
-  }
-
-  if (lane === "left") {
-    return "2"
-  }
-  if (lane === "right") {
-    return "6"
-  }
-  return "4"
+  return "N"
 }
 
 /**
@@ -711,12 +704,12 @@ export const getHardwareDebugSnapshot = () => {
 }
 
 /**
- * Gear from knob position — only engages at gear detents (not mid-rail).
+ * Gear from knob position — only engages near gear detents (not mid-rail).
  */
 export const resolveHGate = (x, y) => {
-  const gears = ["1", "2", "3", "4", "5", "6"]
+  const gears = ["1", "2", "3", "4", "5", "R"]
   let best = "N"
-  let bestDist = DETENT_SNAP * 3
+  let bestDist = GEAR_ENGAGE_RADIUS
   for (const gear of gears) {
     const target = GATE_TARGETS[gear]
     const dist = Math.hypot(x - target.x, y - target.y)
@@ -1005,7 +998,7 @@ const handleKeyDown = (event) => {
     keyboard.gear = "N"
   }
   if (["1", "2", "3", "4", "5", "6"].includes(event.key)) {
-    keyboard.gear = event.key
+    keyboard.gear = event.key === "6" ? "R" : event.key
   }
 }
 

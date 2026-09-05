@@ -1,9 +1,11 @@
 /**
  * Web Audio engine for the manual-transmission player.
- * Graph: media element -> lowpass (clutch muffling) -> dry/wet split
+ * Graph: media element -> mediaGate -> lowpass (clutch muffling) -> dry/wet split
  *   wet -> waveshaper (redline overdrive) -> wet gain
  *   dry -> dry gain
  *   both -> master gain -> destination
+ * Reverse gear uses a reversed AudioBuffer into bufferGate -> lowpass
+ * (Chromium cannot use negative HTMLMediaElement.playbackRate).
  *
  * SFX are synthesized so the project needs no binary wav assets.
  * The playGearGrind / playEngineStall / playStarterMotor names stay
@@ -14,6 +16,8 @@ const TRACK_ID = "track-player"
 
 let audioContext = null
 let mediaSource = null
+let mediaGate = null
+let bufferGate = null
 let lowpass = null
 let shaper = null
 let dryGain = null
@@ -24,8 +28,22 @@ let objectUrl = null
 let graphReady = false
 let lastClutchMuffle = -1
 let lastRedlineWet = -1
-let lastPlaybackRate = -1
+let lastPlaybackRate = 1
 const distortionCurveCache = new Map()
+
+let decodedBuffer = null
+let reversedBuffer = null
+let activeBufferSource = null
+let reverseMode = false
+let bufferPlaying = false
+let bufferRate = 1
+let bufferAnchorMediaTime = 0
+let bufferAnchorCtxTime = 0
+let decodeGeneration = 0
+
+/** Chromium rejects rates below ~0.0625 — keep a safe floor. */
+const MIN_PLAYBACK_RATE = 0.1
+const MAX_PLAYBACK_RATE = 2
 
 const getTrack = () => document.getElementById(TRACK_ID)
 
@@ -74,6 +92,11 @@ const connectGraph = () => {
   const track = getTrack()
   mediaSource = ctx.createMediaElementSource(track)
 
+  mediaGate = ctx.createGain()
+  mediaGate.gain.value = 1
+  bufferGate = ctx.createGain()
+  bufferGate.gain.value = 0
+
   lowpass = ctx.createBiquadFilter()
   lowpass.type = "lowpass"
   lowpass.frequency.value = 18000
@@ -94,7 +117,9 @@ const connectGraph = () => {
   sfxGain = ctx.createGain()
   sfxGain.gain.value = 0.85
 
-  mediaSource.connect(lowpass)
+  mediaSource.connect(mediaGate)
+  mediaGate.connect(lowpass)
+  bufferGate.connect(lowpass)
   lowpass.connect(dryGain)
   lowpass.connect(shaper)
   shaper.connect(wetGain)
@@ -104,6 +129,116 @@ const connectGraph = () => {
   sfxGain.connect(ctx.destination)
 
   graphReady = true
+}
+
+const buildReversedBuffer = (buffer) => {
+  const ctx = ensureContext()
+  const reversed = ctx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const src = buffer.getChannelData(channel)
+    const dst = reversed.getChannelData(channel)
+    for (let i = 0, j = src.length - 1; i < src.length; i += 1, j -= 1) {
+      dst[i] = src[j]
+    }
+  }
+  return reversed
+}
+
+const ensureReversedBuffer = () => {
+  if (reversedBuffer) {
+    return reversedBuffer
+  }
+  if (!decodedBuffer) {
+    return null
+  }
+  reversedBuffer = buildReversedBuffer(decodedBuffer)
+  return reversedBuffer
+}
+
+const clampTime = (time, duration) => Math.min(duration, Math.max(0, time))
+
+const getMediaTimelinePos = () => {
+  const track = getTrack()
+  const duration = decodedBuffer?.duration || track.duration || 0
+  if (reverseMode && bufferPlaying && audioContext) {
+    const elapsed = (audioContext.currentTime - bufferAnchorCtxTime) * bufferRate
+    return clampTime(bufferAnchorMediaTime - elapsed, duration)
+  }
+  return track.currentTime || 0
+}
+
+const stopBufferPlayback = () => {
+  if (activeBufferSource) {
+    try {
+      activeBufferSource.onended = null
+      activeBufferSource.stop()
+    } catch (error) {
+      /* already stopped */
+    }
+    try {
+      activeBufferSource.disconnect()
+    } catch (error) {
+      /* ignore */
+    }
+    activeBufferSource = null
+  }
+  bufferPlaying = false
+  if (bufferGate) {
+    bufferGate.gain.value = 0
+  }
+}
+
+const startReverseAt = (mediaTime, rate) => {
+  const ctx = ensureContext()
+  connectGraph()
+  const reversed = ensureReversedBuffer()
+  if (!reversed) {
+    return false
+  }
+
+  stopBufferPlayback()
+  const track = getTrack()
+  track.pause()
+  mediaGate.gain.value = 0
+  bufferGate.gain.value = 1
+
+  const safeRate = Math.max(MIN_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, rate || 1))
+  const offset = clampTime(reversed.duration - mediaTime, reversed.duration)
+  activeBufferSource = ctx.createBufferSource()
+  activeBufferSource.buffer = reversed
+  activeBufferSource.playbackRate.value = safeRate
+  activeBufferSource.connect(bufferGate)
+  bufferAnchorMediaTime = clampTime(mediaTime, reversed.duration)
+  bufferAnchorCtxTime = ctx.currentTime
+  bufferRate = safeRate
+  activeBufferSource.onended = () => {
+    bufferPlaying = false
+  }
+  try {
+    activeBufferSource.start(0, offset)
+    bufferPlaying = true
+    return true
+  } catch (error) {
+    bufferPlaying = false
+    return false
+  }
+}
+
+const decodeTrackBuffer = async (file, generation) => {
+  try {
+    const ctx = ensureContext()
+    const arrayBuffer = await file.arrayBuffer()
+    if (generation !== decodeGeneration) {
+      return
+    }
+    decodedBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
+    reversedBuffer = null
+  } catch (error) {
+    if (generation === decodeGeneration) {
+      decodedBuffer = null
+      reversedBuffer = null
+    }
+  }
 }
 
 export const initAudio = () => {
@@ -125,10 +260,21 @@ export const loadTrackFile = (file) => {
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl)
   }
+  stopBufferPlayback()
+  reverseMode = false
+  if (mediaGate) {
+    mediaGate.gain.value = 1
+  }
+  decodedBuffer = null
+  reversedBuffer = null
+  decodeGeneration += 1
+  const generation = decodeGeneration
+
   objectUrl = URL.createObjectURL(file)
   track.src = objectUrl
   track.load()
   connectGraph()
+  decodeTrackBuffer(file, generation)
   return file.name
 }
 
@@ -159,30 +305,70 @@ export const setRedlineDistortion = (amount) => {
   wetGain.gain.setTargetAtTime(wet, audioContext.currentTime, 0.05)
 }
 
-/** Chromium rejects rates below ~0.0625 — keep a safe floor. */
-const MIN_PLAYBACK_RATE = 0.1
-const MAX_PLAYBACK_RATE = 2
+export const setPlaybackReverse = (wantReverse) => {
+  connectGraph()
+  const next = Boolean(wantReverse)
+  if (next === reverseMode) {
+    return
+  }
+
+  const pos = getMediaTimelinePos()
+  if (next) {
+    reverseMode = true
+    const rate = Math.abs(lastPlaybackRate) >= MIN_PLAYBACK_RATE ? Math.abs(lastPlaybackRate) : 1
+    if (!startReverseAt(pos, rate)) {
+      getTrack().currentTime = pos
+    }
+    return
+  }
+
+  reverseMode = false
+  stopBufferPlayback()
+  if (mediaGate) {
+    mediaGate.gain.value = 1
+  }
+  const track = getTrack()
+  try {
+    track.currentTime = pos
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+export const isPlaybackReverse = () => reverseMode
 
 export const setPlaybackRate = (rate) => {
   const track = getTrack()
   if (!track) {
     return
   }
-  const safe = Math.max(MIN_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, Number(rate) || 1))
-  if (Math.abs(safe - lastPlaybackRate) < 0.004) {
+  const safe = Math.max(MIN_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, Math.abs(Number(rate) || 1)))
+  if (Math.abs(safe - Math.abs(lastPlaybackRate)) < 0.004 && !(reverseMode && bufferPlaying)) {
+    lastPlaybackRate = safe
     return
   }
+  lastPlaybackRate = safe
+
+  if (reverseMode) {
+    if (activeBufferSource && bufferPlaying && audioContext) {
+      const pos = getMediaTimelinePos()
+      activeBufferSource.playbackRate.value = safe
+      bufferAnchorMediaTime = pos
+      bufferAnchorCtxTime = audioContext.currentTime
+      bufferRate = safe
+    }
+    return
+  }
+
   try {
     track.playbackRate = safe
     track.preservesPitch = false
-    lastPlaybackRate = safe
   } catch (error) {
-    // Never let an unsupported rate kill the rAF game loop.
     try {
       track.playbackRate = 1
       lastPlaybackRate = 1
     } catch (fallbackError) {
-      lastPlaybackRate = -1
+      lastPlaybackRate = 1
     }
   }
 }
@@ -212,7 +398,20 @@ export const play = async () => {
   if (!track.src) {
     return false
   }
+
+  if (reverseMode) {
+    if (bufferPlaying) {
+      return true
+    }
+    const pos = getMediaTimelinePos()
+    const rate = Math.abs(lastPlaybackRate) >= MIN_PLAYBACK_RATE ? Math.abs(lastPlaybackRate) : 1
+    return startReverseAt(pos, rate)
+  }
+
   try {
+    if (mediaGate) {
+      mediaGate.gain.value = 1
+    }
     await track.play()
     return true
   } catch (error) {
@@ -221,11 +420,29 @@ export const play = async () => {
 }
 
 export const pause = () => {
+  if (reverseMode) {
+    const pos = getMediaTimelinePos()
+    stopBufferPlayback()
+    const track = getTrack()
+    try {
+      track.currentTime = pos
+    } catch (error) {
+      /* ignore */
+    }
+    return
+  }
   getTrack().pause()
 }
 
 export const stopAndResetPitch = () => {
   const track = getTrack()
+  if (reverseMode) {
+    reverseMode = false
+    stopBufferPlayback()
+    if (mediaGate) {
+      mediaGate.gain.value = 1
+    }
+  }
   track.pause()
   track.playbackRate = 1
   lastPlaybackRate = 1
@@ -233,14 +450,22 @@ export const stopAndResetPitch = () => {
 
 export const getProgress = () => {
   const track = getTrack()
-  if (!track.duration || Number.isNaN(track.duration)) {
+  const duration = decodedBuffer?.duration || track.duration
+  if (!duration || Number.isNaN(duration)) {
     return 0
   }
-  return track.currentTime / track.duration
+  return getMediaTimelinePos() / duration
 }
 
 export const hasTrack = () => Boolean(getTrack().src)
-export const isPlaying = () => !getTrack().paused && !getTrack().ended
+
+export const isPlaying = () => {
+  if (reverseMode) {
+    return bufferPlaying
+  }
+  const track = getTrack()
+  return !track.paused && !track.ended
+}
 
 const noiseBuffer = (ctx, seconds) => {
   const length = Math.floor(ctx.sampleRate * seconds)
@@ -323,6 +548,16 @@ export const playStarterMotor = () => {
 }
 
 export const scratchToStop = async () => {
+  if (reverseMode) {
+    pause()
+    reverseMode = false
+    if (mediaGate) {
+      mediaGate.gain.value = 1
+    }
+    lastPlaybackRate = 1
+    return
+  }
+
   const track = getTrack()
   if (track.paused) {
     track.playbackRate = 1
