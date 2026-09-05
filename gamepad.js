@@ -32,17 +32,21 @@ const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v6"
 /** Ideal stick targets for each H-gate (Y-up is negative on XInput). */
 export const GATE_X = 0.85
 export const GATE_Y = 0.85
-/** How far into a vertical rail before a gear engages (else Neutral on the crossbar). */
-const GATE_THROW = 0.3
 const LANE_XS = [-GATE_X, 0, GATE_X]
-const JUNCTION_EPS = 0.07
-const STICK_DEADZONE = 0.22
-/** Knob travel speed along rails at full stick (units / second). */
-const H_MOVE_SPEED = 5.2
-const H_KEY_SPEED = 9
+const JUNCTION_EPS = 0.08
+const STICK_DEADZONE = 0.28
+const STICK_LANE = 0.4
+const STICK_THROW = 0.4
+/** Knob travel speed along rails (units / second) — snappy gate-to-gate. */
+const H_MOVE_SPEED = 7.5
+const H_KEY_SPEED = 10
+/** How close before we snap onto a detent. */
+const DETENT_SNAP = 0.06
 
 export const GATE_TARGETS = {
   N: { x: 0, y: 0 },
+  NL: { x: -GATE_X, y: 0 },
+  NR: { x: GATE_X, y: 0 },
   1: { x: -GATE_X, y: -GATE_Y },
   2: { x: -GATE_X, y: GATE_Y },
   3: { x: 0, y: -GATE_Y },
@@ -54,6 +58,8 @@ export const GATE_TARGETS = {
 /** Live knob position — always on the H pathway (never free 2D). */
 let knobX = 0
 let knobY = 0
+/** Discrete destination the knob is traveling to (never rests mid-rail). */
+let knobTargetId = "N"
 let lastPollAt = 0
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
@@ -80,66 +86,76 @@ const nearestLaneX = (x) => {
 
 const applyStickDeadzone = (value) => (Math.abs(value) < STICK_DEADZONE ? 0 : value)
 
-/**
- * Gated H-pattern: knob only moves along the current rail.
- * Vertical slots only move vertically; crossbar only horizontally.
- * Enter/leave a slot only at the junction (y ≈ 0 on a lane).
- * This prevents jumping 1 → 3 without traveling the pathway.
- */
-export const advanceHKnobFromStick = (stickX, stickY, dtSec) => {
-  const sx = applyStickDeadzone(stickX)
-  const sy = applyStickDeadzone(stickY)
-  if (sx === 0 && sy === 0) {
-    // Stick centered — latch knob where it is (gamepads spring to center).
-    return { x: knobX, y: knobY }
+const detentOf = (id) => GATE_TARGETS[id] || GATE_TARGETS.N
+
+const setKnobTarget = (id) => {
+  if (!GATE_TARGETS[id]) {
+    return
   }
-
-  const step = H_MOVE_SPEED * Math.max(0.001, dtSec)
-
-  if (Math.abs(knobY) > JUNCTION_EPS) {
-    // Locked in a vertical gate — only slide along that lane.
-    knobX = nearestLaneX(knobX)
-    const nextY = knobY + sy * step
-    // Crossing the crossbar always stops at Neutral on this lane.
-    if (sy !== 0 && (Math.sign(knobY) !== Math.sign(nextY) || Math.abs(nextY) <= JUNCTION_EPS)) {
-      knobY = 0
-    } else {
-      knobY = clamp(nextY, -GATE_Y, GATE_Y)
-    }
-  } else {
-    // On the horizontal crossbar.
-    knobY = 0
-    // Prefer left/right lane changes when the stick has a horizontal bias,
-    // so you can leave a gate and slide to the next without re-entering.
-    const wantLaneChange = Math.abs(sx) > 0 && Math.abs(sx) >= Math.abs(sy) * 0.75
-    if (wantLaneChange) {
-      knobX = clamp(knobX + sx * step, -GATE_X, GATE_X)
-    } else if (Math.abs(sy) > 0) {
-      const lane = nearestLaneX(knobX)
-      if (Math.abs(knobX - lane) <= JUNCTION_EPS) {
-        knobX = lane
-        knobY = clamp(sy * step, -GATE_Y, GATE_Y)
-      } else {
-        // Drift onto the nearest lane before entering a vertical gate.
-        knobX = moveToward(knobX, lane, step)
-      }
-    }
-  }
-
-  return { x: knobX, y: knobY }
+  knobTargetId = id
 }
 
 /**
- * Move knob toward a target along the H pathway only (for keyboard gears).
+ * Map stick deflection to a discrete H detent.
+ * Lane from X, gear vs neutral from Y — always a real resting position.
+ */
+const detentFromStick = (stickX, stickY) => {
+  const sx = applyStickDeadzone(stickX)
+  const sy = applyStickDeadzone(stickY)
+  if (sx === 0 && sy === 0) {
+    return null
+  }
+
+  let lane = "mid"
+  if (sx <= -STICK_LANE) {
+    lane = "left"
+  } else if (sx >= STICK_LANE) {
+    lane = "right"
+  }
+
+  if (Math.abs(sy) < STICK_THROW) {
+    if (lane === "left") {
+      return "NL"
+    }
+    if (lane === "right") {
+      return "NR"
+    }
+    return "N"
+  }
+
+  if (sy < 0) {
+    if (lane === "left") {
+      return "1"
+    }
+    if (lane === "right") {
+      return "5"
+    }
+    return "3"
+  }
+
+  if (lane === "left") {
+    return "2"
+  }
+  if (lane === "right") {
+    return "6"
+  }
+  return "4"
+}
+
+/**
+ * Move knob toward a target along the H pathway only.
+ * Always used so travel completes gate-to-gate (no mid-rail parking).
  */
 export const advanceHKnobToward = (targetX, targetY, dtSec) => {
-  const step = H_KEY_SPEED * Math.max(0.001, dtSec)
+  const step = H_MOVE_SPEED * Math.max(0.001, dtSec)
   const sameLane = Math.abs(knobX - targetX) <= JUNCTION_EPS
 
   if (Math.abs(knobY) > JUNCTION_EPS) {
     knobX = nearestLaneX(knobX)
-    if (!sameLane || Math.sign(knobY) !== Math.sign(targetY) && Math.abs(targetY) > JUNCTION_EPS) {
-      // Leave current gate to the crossbar before changing lanes.
+    const needCrossbar =
+      !sameLane ||
+      (Math.abs(targetY) > JUNCTION_EPS && Math.sign(knobY) !== Math.sign(targetY))
+    if (needCrossbar) {
       knobY = moveToward(knobY, 0, step)
       if (Math.abs(knobY) <= JUNCTION_EPS) {
         knobY = 0
@@ -161,9 +177,29 @@ export const advanceHKnobToward = (targetX, targetY, dtSec) => {
   return { x: knobX, y: knobY }
 }
 
+/**
+ * Stick picks a detent; knob always finishes the path to that detent.
+ * Releasing the stick does not leave the knob stuck mid-way.
+ */
+export const advanceHKnobFromStick = (stickX, stickY, dtSec) => {
+  const nextId = detentFromStick(stickX, stickY)
+  if (nextId) {
+    setKnobTarget(nextId)
+  }
+
+  const target = detentOf(knobTargetId)
+  advanceHKnobToward(target.x, target.y, dtSec)
+
+  if (Math.hypot(knobX - target.x, knobY - target.y) <= DETENT_SNAP) {
+    knobX = target.x
+    knobY = target.y
+  }
+
+  return { x: knobX, y: knobY }
+}
+
 /** Snap helper kept for any UI that still wants nearest-rail projection. */
 export const projectOntoHPattern = (x, y) => {
-  // Prefer current pathway rules: if already near a rail, stay gated.
   if (Math.abs(y) > JUNCTION_EPS) {
     return { x: nearestLaneX(x), y: clamp(y, -GATE_Y, GATE_Y) }
   }
@@ -385,6 +421,7 @@ export const resetBindings = () => {
   listenBaselineButtons = null
   knobX = 0
   knobY = 0
+  knobTargetId = "N"
   persistBindings()
   persistTriggerHardware()
   applyShifterAxesForStick(bindings.shifterStick)
@@ -674,36 +711,21 @@ export const getHardwareDebugSnapshot = () => {
 }
 
 /**
- * Gear from knob position on the H rails.
- * Easy engage once you push a bit into a gate slot.
+ * Gear from knob position — only engages at gear detents (not mid-rail).
  */
 export const resolveHGate = (x, y) => {
-  if (Math.abs(y) < GATE_THROW) {
-    return "N"
-  }
-
-  const lane = nearestLaneX(x)
-  if (Math.abs(x - lane) > JUNCTION_EPS * 2) {
-    return "N"
-  }
-
-  if (y < 0) {
-    if (lane < -GATE_X * 0.5) {
-      return "1"
+  const gears = ["1", "2", "3", "4", "5", "6"]
+  let best = "N"
+  let bestDist = DETENT_SNAP * 3
+  for (const gear of gears) {
+    const target = GATE_TARGETS[gear]
+    const dist = Math.hypot(x - target.x, y - target.y)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = gear
     }
-    if (lane > GATE_X * 0.5) {
-      return "5"
-    }
-    return "3"
   }
-
-  if (lane < -GATE_X * 0.5) {
-    return "2"
-  }
-  if (lane > GATE_X * 0.5) {
-    return "6"
-  }
-  return "4"
+  return best
 }
 
 const readPad = () => {
@@ -915,12 +937,23 @@ export const pollInput = () => {
   }
 
   if (keyboard.gear !== "N") {
-    const target = GATE_TARGETS[keyboard.gear] || GATE_TARGETS.N
-    advanceHKnobToward(target.x, target.y, dtSec)
+    setKnobTarget(keyboard.gear)
+    const target = detentOf(knobTargetId)
+    advanceHKnobToward(target.x, target.y, dtSec * (H_KEY_SPEED / H_MOVE_SPEED))
+    if (Math.hypot(knobX - target.x, knobY - target.y) <= DETENT_SNAP) {
+      knobX = target.x
+      knobY = target.y
+    }
   } else if (pad) {
     advanceHKnobFromStick(stickX, stickY, dtSec)
   } else {
-    advanceHKnobToward(0, 0, dtSec)
+    setKnobTarget("N")
+    const target = detentOf("N")
+    advanceHKnobToward(target.x, target.y, dtSec)
+    if (Math.hypot(knobX - target.x, knobY - target.y) <= DETENT_SNAP) {
+      knobX = target.x
+      knobY = target.y
+    }
   }
 
   const gearIntent = resolveHGate(knobX, knobY)
