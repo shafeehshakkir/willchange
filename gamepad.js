@@ -27,7 +27,7 @@ export const TRIGGER_HARDWARE = {
 const NEUTRAL_RADIUS = 0.22
 const KEY_RAMP = 0.12
 const STORAGE_KEY = "nightdrive-bindings-v6"
-const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v5"
+const TRIGGER_STORAGE_KEY = "nightdrive-trigger-hardware-v6"
 
 /** Ideal stick targets for each H-gate (Y-up is negative on XInput). */
 export const GATE_X = 0.85
@@ -250,12 +250,6 @@ const loadBindings = () => {
 
 bindings = loadBindings()
 triggerHardware = loadTriggerHardware()
-// Only treat stored maps as user-locked (Apply / Listen). Fresh defaults stay editable.
-try {
-  userLockedMapping = Boolean(window.localStorage.getItem(TRIGGER_STORAGE_KEY))
-} catch (error) {
-  userLockedMapping = false
-}
 
 const persistBindings = () => {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bindings))
@@ -280,6 +274,57 @@ const syncBindingsFromTriggers = () => {
   persistBindings()
 }
 
+/** Prefer free analog axes for pedals — never keep digital button maps (0↔1 jumps). */
+const ensureAnalogPedals = () => {
+  const taken = new Set([bindings.shiftX.index, bindings.shiftY.index])
+  const prefer = [5, 2, 4, 3, 6, 7]
+
+  ;["clutch", "throttle"].forEach((role) => {
+    const hw = triggerHardware[role]
+    if (hw?.source === "axis") {
+      taken.add(Number(hw.index))
+    }
+  })
+
+  ;["clutch", "throttle"].forEach((role) => {
+    const hw = triggerHardware[role]
+    if (hw?.source === "axis") {
+      return
+    }
+    const pick = prefer.find((index) => !taken.has(index))
+    if (pick == null) {
+      return
+    }
+    triggerHardware[role] = { source: "axis", index: pick, range: "minus1to1" }
+    taken.add(pick)
+  })
+
+  if (
+    triggerHardware.clutch.source === "axis" &&
+    triggerHardware.throttle.source === "axis" &&
+    Number(triggerHardware.clutch.index) === Number(triggerHardware.throttle.index)
+  ) {
+    const clutchAxis = Number(triggerHardware.clutch.index)
+    const pick =
+      prefer.find((index) => index !== clutchAxis && !taken.has(index)) ||
+      prefer.find((index) => index !== clutchAxis)
+    if (pick != null) {
+      triggerHardware.throttle = { source: "axis", index: pick, range: "minus1to1" }
+    }
+  }
+
+  syncBindingsFromTriggers()
+  persistTriggerHardware()
+}
+
+ensureAnalogPedals()
+
+try {
+  userLockedMapping = Boolean(window.localStorage.getItem(TRIGGER_STORAGE_KEY))
+} catch (error) {
+  userLockedMapping = false
+}
+
 export const getBindings = () => cloneBindings(bindings)
 
 export const getTriggerHardware = () => cloneTriggerHardware(triggerHardware)
@@ -292,24 +337,39 @@ export const setTriggerHardware = (role, source, index, range = "minus1to1") => 
   if (role !== "clutch" && role !== "throttle") {
     return getTriggerHardware()
   }
-  const normalizedSource = source === "axis" ? "axis" : "button"
+  // Pedals must stay analog — digital buttons only jump 0↔100%.
+  const normalizedSource = source === "button" ? "button" : "axis"
+  let finalSource = normalizedSource
+  let finalIndex = Number(index)
+  let finalRange = range === "zeroToOne" ? "zeroToOne" : "minus1to1"
+
+  if (finalSource === "button") {
+    // Convert digital button binds to a free trigger axis instead.
+    const taken = new Set([
+      bindings.shiftX.index,
+      bindings.shiftY.index,
+      role === "clutch" ? Number(triggerHardware.throttle.index) : Number(triggerHardware.clutch.index),
+    ])
+    const prefer = [5, 2, 4, 3, 6, 7]
+    const pick = prefer.find((axisIndex) => !taken.has(axisIndex) && axisIndex !== finalIndex)
+    if (pick != null) {
+      finalSource = "axis"
+      finalIndex = pick
+      finalRange = "minus1to1"
+    }
+  }
+
   triggerHardware[role] = {
-    source: normalizedSource,
-    index: Number(index),
-    range:
-      normalizedSource === "axis"
-        ? range === "zeroToOne"
-          ? "zeroToOne"
-          : "minus1to1"
-        : "zeroToOne",
+    source: finalSource,
+    index: finalIndex,
+    range: finalSource === "axis" ? finalRange : "zeroToOne",
   }
   userLockedMapping = true
   syncBindingsFromTriggers()
   persistTriggerHardware()
-  // If the new pedal axis was the shifter, move the stick to a free pair.
   if (
-    normalizedSource === "axis" &&
-    (Number(index) === bindings.shiftX.index || Number(index) === bindings.shiftY.index)
+    finalSource === "axis" &&
+    (finalIndex === bindings.shiftX.index || finalIndex === bindings.shiftY.index)
   ) {
     applyShifterAxesForStick(bindings.shifterStick)
     persistBindings()
@@ -328,6 +388,7 @@ export const resetBindings = () => {
   persistBindings()
   persistTriggerHardware()
   applyShifterAxesForStick(bindings.shifterStick)
+  ensureAnalogPedals()
   return getBindings()
 }
 
@@ -439,6 +500,79 @@ const readHardwareTrigger = (pad, role) => {
   }
 
   return readButtonAnalogValue(pad, Number(config.index))
+}
+
+/** Track axis idle so we only auto-bind real triggers (rest ≈ -1), never sticks (rest ≈ 0). */
+const axisRestEMA = []
+
+const updateAxisRestEstimates = (pad) => {
+  for (let i = 0; i < pad.axes.length; i += 1) {
+    const raw = Number(pad.axes[i]) || 0
+    if (axisRestEMA[i] == null) {
+      axisRestEMA[i] = raw
+    } else {
+      // Pull toward values near idle; slow update while moving.
+      const alpha = Math.abs(raw - axisRestEMA[i]) < 0.12 ? 0.15 : 0.02
+      axisRestEMA[i] = axisRestEMA[i] * (1 - alpha) + raw * alpha
+    }
+  }
+}
+
+/**
+ * If a pedal axis never leaves rest but another free axis slides like a trigger,
+ * rebind once so throttle/clutch stay analog.
+ */
+const maybeRetargetPedalAxis = (pad, role) => {
+  const hw = triggerHardware[role]
+  if (!hw || hw.source !== "axis") {
+    return
+  }
+
+  updateAxisRestEstimates(pad)
+
+  const index = Number(hw.index)
+  const raw = axisValue(pad, index)
+  const current = normalizeAxisToPedal(raw, hw.range || "minus1to1")
+  if (current > 0.08) {
+    return
+  }
+
+  const otherRole = role === "clutch" ? "throttle" : "clutch"
+  const blocked = new Set([
+    index,
+    bindings.shiftX.index,
+    bindings.shiftY.index,
+    0,
+    1,
+  ])
+  if (triggerHardware[otherRole]?.source === "axis") {
+    blocked.add(Number(triggerHardware[otherRole].index))
+  }
+
+  let bestAxis = -1
+  let bestTravel = 0.25
+  for (let i = 0; i < pad.axes.length; i += 1) {
+    if (blocked.has(i)) {
+      continue
+    }
+    const rest = axisRestEMA[i]
+    // Sticks idle near 0; Linux triggers idle near -1.
+    if (rest == null || rest > -0.7) {
+      continue
+    }
+    const value = axisValue(pad, i)
+    const travel = (value + 1) / 2
+    if (travel > bestTravel && travel < 0.98) {
+      bestTravel = travel
+      bestAxis = i
+    }
+  }
+
+  if (bestAxis < 0) {
+    return
+  }
+
+  setTriggerHardware(role, "axis", bestAxis, "minus1to1")
 }
 
 const friendlyControl = (binding, role) => {
@@ -659,9 +793,21 @@ const detectListen = (pad) => {
   }
 
   if (listenTarget === "clutch" || listenTarget === "throttle") {
+    const otherRole = listenTarget === "clutch" ? "throttle" : "clutch"
+    const blocked = new Set([
+      bindings.shiftX.index,
+      bindings.shiftY.index,
+    ])
+    if (triggerHardware[otherRole]?.source === "axis") {
+      blocked.add(Number(triggerHardware[otherRole].index))
+    }
+
     let bestAxis = -1
-    let bestAxisDelta = 0.22
+    let bestAxisDelta = 0.18
     for (let i = 0; i < pad.axes.length; i += 1) {
+      if (blocked.has(i)) {
+        continue
+      }
       const raw = axisValue(pad, i)
       const base = listenBaselineAxes?.[i] ?? raw
       const delta = Math.abs(raw - base)
@@ -671,31 +817,12 @@ const detectListen = (pad) => {
       }
     }
 
-    let bestButton = -1
-    let bestButtonDelta = 0.45
-    for (let i = 0; i < pad.buttons.length; i += 1) {
-      const value = readButtonAnalogValue(pad, i)
-      const base = listenBaselineButtons?.[i] ?? 0
-      const delta = Math.abs(value - base)
-      if (delta > bestButtonDelta) {
-        bestButtonDelta = delta
-        bestButton = i
-      }
-    }
-
-    // On Linux LT/RT often move a digital button AND an axis together.
-    // Prefer the axis so Listen captures smooth analog, not 0/1.
+    // Pedals always bind an axis when one moved — never a digital button.
     if (bestAxis >= 0) {
       const raw = axisValue(pad, bestAxis)
       const base = listenBaselineAxes?.[bestAxis] ?? 0
       const range = raw < -0.05 || base < -0.05 ? "minus1to1" : "zeroToOne"
       setTriggerHardware(listenTarget, "axis", bestAxis, range)
-      finishListen()
-      return true
-    }
-
-    if (bestButton >= 0) {
-      setTriggerHardware(listenTarget, "button", bestButton, "zeroToOne")
       finishListen()
       return true
     }
@@ -765,6 +892,15 @@ export const pollInput = () => {
     // Pedals stay on TRIGGER_HARDWARE only — never the shifter axes.
     clutch = readHardwareTrigger(pad, "clutch")
     throttle = readHardwareTrigger(pad, "throttle")
+    // Heal digital/wrong-axis throttle (or clutch) while the player presses it.
+    if (throttle < 0.05) {
+      maybeRetargetPedalAxis(pad, "throttle")
+      throttle = readHardwareTrigger(pad, "throttle")
+    }
+    if (clutch < 0.05) {
+      maybeRetargetPedalAxis(pad, "clutch")
+      clutch = readHardwareTrigger(pad, "clutch")
+    }
 
     stickX = axisValue(pad, bindings.shiftX.index)
     stickY = axisValue(pad, bindings.shiftY.index)
