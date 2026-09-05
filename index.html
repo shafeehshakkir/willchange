@@ -1,1 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stick-Shift Jockey — Manual Transmission Music Player</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: [
+                "Helvetica Neue",
+                "Helvetica",
+                "Arial",
+                "Segoe UI",
+                "sans-serif",
+              ],
+            },
+            colors: {
+              ink: "#111111",
+              panel: "#1c1c1c",
+              line: "#3a3a3a",
+              mute: "#9a9a9a",
+              paper: "#f2f2f2",
+              accent: "#e0872a",
+              danger: "#d4452a",
+            },
+          },
+        },
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="cabin-body min-h-screen overflow-x-hidden font-sans text-paper">
+    <button
+      id="guide-toggle"
+      type="button"
+      class="guide-toggle"
+      aria-expanded="false"
+      aria-controls="guide-panel"
+      tabindex="0"
+    >
+      Guide
+    </button>
 
+    <aside
+      id="guide-panel"
+      class="guide-panel"
+      aria-hidden="true"
+      aria-label="How to drive Stick-Shift Jockey"
+    >
+      <div class="guide-header">
+        <h2 class="text-lg font-semibold text-paper">How to drive</h2>
+        <button
+          id="guide-close"
+          type="button"
+          class="radio-key guide-close"
+          aria-label="Close guide"
+          tabindex="0"
+        >
+          Close
+        </button>
+      </div>
+      <div class="guide-body">
+        <h3>1. Load a song</h3>
+        <p>Click <strong>Load MP3</strong> and pick a file. Click once on the page so the browser allows sound.</p>
+
+        <h3>2. Start the engine</h3>
+        <p>Mash <kbd>A</kbd> (or <kbd>Space</kbd> / the <strong>Crank</strong> button) about 5 times quickly until the engine catches.</p>
+
+        <h3>3. Pedals</h3>
+        <ul>
+          <li><strong id="guide-clutch-bind">Clutch</strong> — bar matches how hard you press</li>
+          <li><strong id="guide-throttle-bind">Throttle</strong> — same idea, variable pressure</li>
+        </ul>
+
+        <h3>4. Shift the H-gate</h3>
+        <ol>
+          <li>Press the clutch in past about 85%</li>
+          <li>Move the <span id="guide-stick-bind">right stick</span> toward a gear (1–6). Closest gate wins</li>
+          <li>Ease the clutch out while adding throttle so you don’t stall</li>
+          <li>Return the stick to center for Neutral</li>
+        </ol>
+
+        <h3>5. Drive the music</h3>
+        <p>Music only moves when you’re in gear, clutch mostly out, and on the throttle. Stay in a low gear too long and you hit the redline.</p>
+
+        <h3>Mistakes</h3>
+        <ul>
+          <li><strong>Grind</strong> — shifting without enough clutch</li>
+          <li><strong>Stall</strong> — dumping the clutch too fast without throttle</li>
+          <li>If stalled, mash <kbd>A</kbd> again to restart</li>
+        </ul>
+
+        <h3>Keyboard</h3>
+        <ul>
+          <li><kbd>Q</kbd> clutch · <kbd>E</kbd> throttle</li>
+          <li><kbd>1</kbd>–<kbd>6</kbd> gears · <kbd>0</kbd>/<kbd>N</kbd> neutral</li>
+          <li><kbd>Space</kbd> ignition · <kbd>?</kbd> toggle this guide</li>
+        </ul>
+
+        <h3>Bindings</h3>
+        <p id="guide-bindings-line">
+          Use the bindings panel under the dash if your controller mapping feels wrong.
+        </p>
+      </div>
+    </aside>
+
+    <canvas
+      id="rain-canvas"
+      class="pointer-events-none fixed inset-0 z-0"
+      aria-hidden="true"
+    ></canvas>
+    <div class="night-sky pointer-events-none fixed inset-0 z-0" aria-hidden="true"></div>
+    <div class="windshield-glass pointer-events-none fixed inset-0 z-10" aria-hidden="true"></div>
+
+    <div id="cabin" class="relative z-30 flex min-h-screen flex-col">
+      <header class="px-6 pt-10 text-center sm:pt-12">
+        <p class="text-sm text-mute">Useless Hackathon · music you have to drive</p>
+        <h1 class="mt-2 text-4xl font-bold tracking-tight text-paper sm:text-5xl">
+          Stick-Shift Jockey
+        </h1>
+        <p class="mt-2 text-base text-mute">
+          Manual transmission music player
+        </p>
+      </header>
+
+      <main class="mx-auto flex w-full max-w-6xl flex-1 flex-col justify-end px-4 pb-10 pt-8 sm:px-8">
+        <section
+          id="radio"
+          class="radio-bezel mb-5 px-4 py-4 sm:px-5"
+          aria-label="Car radio"
+        >
+          <div class="flex flex-wrap items-center gap-4">
+            <div class="flex items-center gap-2">
+              <span class="led-dot" aria-hidden="true"></span>
+              <span class="text-sm text-mute">Track</span>
+            </div>
+
+            <p
+              id="track-name"
+              class="min-w-0 flex-1 truncate text-lg text-paper"
+            >
+              No file loaded
+            </p>
+
+            <div class="flex items-center gap-3">
+              <label
+                for="track-upload"
+                class="cursor-pointer text-base text-accent underline-offset-2 hover:underline"
+                tabindex="0"
+                aria-label="Upload an MP3 file"
+              >
+                Load MP3
+              </label>
+              <input
+                id="track-upload"
+                type="file"
+                accept="audio/mpeg,.mp3,audio/*"
+                class="sr-only"
+              />
+              <button
+                id="radio-toggle"
+                type="button"
+                class="radio-key"
+                aria-label="Ignition play control"
+                tabindex="0"
+              >
+                Crank
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="dash-panel grid grid-cols-1 items-end gap-8 px-4 py-6 sm:grid-cols-12 sm:px-6"
+          aria-label="Instrument cluster"
+        >
+          <div class="sm:col-span-5">
+            <div class="mb-3 flex items-baseline justify-between">
+              <h2 class="text-base font-medium text-mute">Tachometer</h2>
+              <p id="rpm-readout" class="text-3xl font-semibold tabular-nums text-paper">0000</p>
+            </div>
+            <div class="tach-wrap relative mx-auto aspect-[2/1] w-full max-w-md">
+              <svg
+                id="tach-svg"
+                viewBox="0 0 240 140"
+                class="h-full w-full overflow-visible"
+                role="img"
+                aria-label="Engine RPM gauge"
+              >
+                <path
+                  class="tach-arc"
+                  d="M20 120 A100 100 0 0 1 220 120"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="8"
+                />
+                <path
+                  class="tach-redline"
+                  d="M186 40 A100 100 0 0 1 220 120"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="8"
+                />
+                <g id="tach-ticks" class="tach-ticks" aria-hidden="true"></g>
+                <g id="tach-needle-arm" transform="rotate(180 120 120)">
+                  <line
+                    id="tach-needle"
+                    x1="120"
+                    y1="120"
+                    x2="208"
+                    y2="120"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                  />
+                  <circle cx="120" cy="120" r="5" fill="#f2f2f2" />
+                </g>
+              </svg>
+              <p
+                id="redline-flag"
+                class="pointer-events-none absolute right-2 top-1 text-sm font-semibold text-danger"
+              >
+                REDLINE
+              </p>
+            </div>
+          </div>
+
+          <div class="flex flex-col items-center sm:col-span-3">
+            <h2 class="mb-2 text-base font-medium text-mute">Gear</h2>
+            <p
+              id="gear-led"
+              class="gear-led text-7xl font-bold leading-none text-paper"
+              aria-live="polite"
+            >
+              N
+            </p>
+            <p id="engine-state" class="mt-3 text-base text-mute">
+              Engine off
+            </p>
+            <div
+              id="h-gate"
+              class="h-gate mt-5"
+              aria-label="H-pattern shifter"
+            >
+              <span class="h-label" data-gate="1">1</span>
+              <span class="h-label" data-gate="3">3</span>
+              <span class="h-label" data-gate="5">5</span>
+              <span class="h-rail h-rail-h" aria-hidden="true"></span>
+              <span class="h-rail h-rail-v h-rail-left" aria-hidden="true"></span>
+              <span class="h-rail h-rail-v h-rail-mid" aria-hidden="true"></span>
+              <span class="h-rail h-rail-v h-rail-right" aria-hidden="true"></span>
+              <span class="h-label h-label-bottom" data-gate="2">2</span>
+              <span class="h-label h-label-bottom" data-gate="4">4</span>
+              <span class="h-label h-label-bottom" data-gate="6">6</span>
+              <span class="h-knob" id="h-knob"></span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-5 sm:col-span-4">
+            <div>
+              <div class="mb-2 flex justify-between text-base text-paper">
+                <span>Clutch</span>
+                <span id="clutch-value" class="tabular-nums">0%</span>
+              </div>
+              <div
+                class="pedal-rail"
+                role="progressbar"
+                aria-label="Clutch pressure"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                id="clutch-rail"
+              >
+                <div id="clutch-fill" class="pedal-fill"></div>
+              </div>
+            </div>
+            <div>
+              <div class="mb-2 flex justify-between text-base text-paper">
+                <span>Throttle</span>
+                <span id="throttle-value" class="tabular-nums">0%</span>
+              </div>
+              <div
+                class="pedal-rail"
+                role="progressbar"
+                aria-label="Throttle pressure"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                id="throttle-rail"
+              >
+                <div id="throttle-fill" class="pedal-fill pedal-fill-hot"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <p
+          id="hint"
+          class="mt-5 text-center text-base text-mute sm:text-lg"
+        >
+          Connect a controller · LT clutch · RT throttle · right stick H-gate · mash A to start
+        </p>
+
+        <section id="bindings-panel" class="bindings-panel mt-5 px-4 py-4 sm:px-5" aria-label="Controller bindings">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold text-paper">
+              Controller bindings
+            </h2>
+            <div class="flex items-center gap-3">
+              <p id="bind-status" class="text-sm text-mute sm:text-base">
+                LT clutch · RT throttle
+              </p>
+              <button
+                id="bind-reset"
+                type="button"
+                class="radio-key"
+                aria-label="Reset controller bindings"
+                tabindex="0"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="bind-row">
+              <p class="text-sm text-mute">Clutch</p>
+              <p id="bind-clutch-label" class="text-base text-paper">LT · Button 6</p>
+              <button id="bind-clutch" type="button" class="radio-key bind-listen" tabindex="0">
+                Listen
+              </button>
+            </div>
+            <div class="bind-row">
+              <p class="text-sm text-mute">Throttle</p>
+              <p id="bind-throttle-label" class="text-base text-paper">RT · Button 7</p>
+              <button id="bind-throttle" type="button" class="radio-key bind-listen" tabindex="0">
+                Listen
+              </button>
+            </div>
+            <div class="bind-row">
+              <p class="text-sm text-mute">Shifter stick</p>
+              <label class="sr-only" for="bind-stick">Shifter stick</label>
+              <select id="bind-stick" class="bind-select" tabindex="0" aria-label="Choose shifter stick">
+                <option value="right">Right stick</option>
+                <option value="left">Left stick</option>
+              </select>
+              <label class="flex items-center gap-2 text-sm text-paper">
+                <input id="bind-invert-y" type="checkbox" tabindex="0" />
+                Invert Y
+              </label>
+              <button id="bind-shift" type="button" class="radio-key bind-listen" tabindex="0">
+                Listen
+              </button>
+            </div>
+            <div class="bind-row">
+              <p class="text-sm text-mute">Ignition</p>
+              <p id="bind-ignition-label" class="text-base text-paper">A · Button 0</p>
+              <button id="bind-ignition" type="button" class="radio-key bind-listen" tabindex="0">
+                Listen
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="gamepad-debugger"
+          class="debug-panel mt-5 px-4 py-4 sm:px-5"
+          aria-label="Gamepad hardware debugger"
+        >
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold text-paper">Gamepad debugger</h2>
+            <p id="debug-pad-id" class="text-sm text-mute">No pad connected — press any button</p>
+          </div>
+          <p class="mb-3 text-sm text-mute">
+            Pull LT/RT slowly. If buttons[6]/[7] jump 0↔1, look for an axis that moves smoothly, then assign it below (or edit <code>TRIGGER_HARDWARE</code> in gamepad.js).
+          </p>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="bind-row">
+              <p class="text-sm text-mute">buttons[6].value (std LT)</p>
+              <p id="debug-b6" class="text-base tabular-nums text-paper">0.000</p>
+              <p id="debug-b6-pressed" class="text-sm text-mute">pressed: false</p>
+            </div>
+            <div class="bind-row">
+              <p class="text-sm text-mute">buttons[7].value (std RT)</p>
+              <p id="debug-b7" class="text-base tabular-nums text-paper">0.000</p>
+              <p id="debug-b7-pressed" class="text-sm text-mute">pressed: false</p>
+            </div>
+          </div>
+          <div class="bind-row mt-3">
+            <p class="text-sm text-mute">axes[]</p>
+            <pre id="debug-axes" class="debug-axes text-sm text-paper">[]</pre>
+          </div>
+          <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="bind-row">
+              <p class="text-sm text-mute">Mapped clutchValue</p>
+              <p id="debug-clutch" class="text-base tabular-nums text-paper">0.000</p>
+              <div class="flex flex-wrap gap-2">
+                <select id="debug-clutch-source" class="bind-select" aria-label="Clutch source type" tabindex="0">
+                  <option value="button">button</option>
+                  <option value="axis">axis</option>
+                </select>
+                <input
+                  id="debug-clutch-index"
+                  class="bind-select"
+                  type="number"
+                  min="0"
+                  max="15"
+                  value="6"
+                  aria-label="Clutch index"
+                  tabindex="0"
+                />
+                <select id="debug-clutch-range" class="bind-select" aria-label="Clutch axis range" tabindex="0">
+                  <option value="minus1to1">axis -1→1</option>
+                  <option value="zeroToOne">axis 0→1</option>
+                </select>
+                <button id="debug-clutch-apply" type="button" class="radio-key" tabindex="0">Apply clutch</button>
+              </div>
+            </div>
+            <div class="bind-row">
+              <p class="text-sm text-mute">Mapped throttleValue</p>
+              <p id="debug-throttle" class="text-base tabular-nums text-paper">0.000</p>
+              <div class="flex flex-wrap gap-2">
+                <select id="debug-throttle-source" class="bind-select" aria-label="Throttle source type" tabindex="0">
+                  <option value="button">button</option>
+                  <option value="axis">axis</option>
+                </select>
+                <input
+                  id="debug-throttle-index"
+                  class="bind-select"
+                  type="number"
+                  min="0"
+                  max="15"
+                  value="7"
+                  aria-label="Throttle index"
+                  tabindex="0"
+                />
+                <select id="debug-throttle-range" class="bind-select" aria-label="Throttle axis range" tabindex="0">
+                  <option value="minus1to1">axis -1→1</option>
+                  <option value="zeroToOne">axis 0→1</option>
+                </select>
+                <button id="debug-throttle-apply" type="button" class="radio-key" tabindex="0">Apply throttle</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <audio id="track-player" preload="auto"></audio>
+    <script type="module" src="engine.js"></script>
+  </body>
+</html>
