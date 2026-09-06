@@ -37,7 +37,6 @@ Tools: any static HTTP server (Live Server, npx serve, Python http.server, etc.)
 ### Implementation
 For Software:
 # Installation
-# Installation
 git clone https://github.com/shafeehshakkir/stick-shift_jockey.git
 cd stick-shift_jockey
 
